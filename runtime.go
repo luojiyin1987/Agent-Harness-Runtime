@@ -205,6 +205,10 @@ func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 			_ = exec.transition(StatusFailed)
 			return snapshot(exec, steps, ""), fmt.Errorf("model step: %w", err)
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			_ = exec.transition(StatusCancelled)
+			return snapshot(exec, steps, ""), ctxErr
+		}
 		if err := decision.Validate(); err != nil {
 			_ = exec.transition(StatusFailed)
 			return snapshot(exec, steps, ""), err
@@ -234,6 +238,10 @@ func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 				}
 				_ = exec.transition(StatusFailed)
 				return snapshot(exec, steps, ""), fmt.Errorf("execute tool %q: %w", decision.ToolCall.Name, err)
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				_ = exec.transition(StatusCancelled)
+				return snapshot(exec, steps, ""), ctxErr
 			}
 
 			steps = append(steps, Step{
