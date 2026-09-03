@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-const CheckpointSchemaVersion = 1
+// CheckpointSchemaVersion 2 reserves model iterations before invoking callbacks.
+// Version 1 remains readable for inspection but cannot be resumed safely.
+const CheckpointSchemaVersion = 2
 
 const checkpointWriteTimeout = 5 * time.Second
 
@@ -40,6 +42,17 @@ type CheckpointStore interface {
 	Create(context.Context, Checkpoint) error
 	Save(context.Context, Checkpoint) error
 	Load(context.Context, string) (Checkpoint, error)
+}
+
+// ExecutionLocker optionally extends CheckpointStore. It must exclude all other
+// Run/Resume writers for this execution across store instances and processes.
+// LockExecution returns ErrExecutionBusy rather than waiting for an owner.
+// The returned function releases ownership and must be called exactly once.
+// The context controls acquisition only; cancelling it after success must not
+// release ownership while a callback or checkpoint write is still in progress.
+// Stores without this capability support Run only, with caller-owned exclusion.
+type ExecutionLocker interface {
+	LockExecution(context.Context, string) (release func(), err error)
 }
 
 // WithCheckpointStore enables persistence and requires Request.ExecutionID.

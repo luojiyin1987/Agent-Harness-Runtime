@@ -69,7 +69,7 @@ func TestRunCheckpointsCallbackBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantStatuses := []Status{StatusCreated, StatusRunningModel, StatusRunningTool, StatusRunningModel, StatusCompleted}
+	wantStatuses := []Status{StatusCreated, StatusRunningModel, StatusRunningTool, StatusRunningModel, StatusRunningModel, StatusCompleted}
 	statuses := make([]Status, 0, len(store.records))
 	for _, record := range store.records {
 		statuses = append(statuses, record.Result.Status)
@@ -98,7 +98,8 @@ func TestRunStopsAtEveryCheckpointWriteFailure(t *testing.T) {
 		{"before model", 2, 0, 0},
 		{"before tool", 3, 1, 0},
 		{"after tool", 4, 1, 1},
-		{"terminal", 5, 2, 1},
+		{"before second model", 5, 1, 1},
+		{"terminal", 6, 2, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

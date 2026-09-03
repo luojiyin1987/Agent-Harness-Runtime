@@ -73,7 +73,7 @@ func TestFileStorePersistsRunAcrossReopenAndRejectsDuplicateID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || filepath.Ext(entries[0].Name()) != ".json" {
+	if len(entries) != 2 || filepath.Ext(entries[0].Name()) != ".json" || filepath.Ext(entries[1].Name()) != ".lock" {
 		t.Fatalf("files = %v", entries)
 	}
 	info, err := entries[0].Info()

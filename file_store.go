@@ -155,7 +155,7 @@ func checkStoreContext(ctx context.Context) error {
 }
 
 func validateCheckpoint(checkpoint Checkpoint) error {
-	if checkpoint.SchemaVersion != CheckpointSchemaVersion {
+	if checkpoint.SchemaVersion != 1 && checkpoint.SchemaVersion != CheckpointSchemaVersion {
 		return fmt.Errorf("%w: unsupported schema version %d", ErrInvalidCheckpoint, checkpoint.SchemaVersion)
 	}
 	if checkpoint.ExecutionID == "" || checkpoint.ExecutionID != checkpoint.Request.ExecutionID || checkpoint.ExecutionID != checkpoint.Result.ExecutionID {
@@ -173,6 +173,11 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 	}
 	if status != checkpoint.Result.Status {
 		return fmt.Errorf("%w: status does not match transition history", ErrInvalidCheckpoint)
+	}
+	if checkpoint.SchemaVersion == CheckpointSchemaVersion {
+		if err := validateRecoveryState(checkpoint); err != nil {
+			return err
+		}
 	}
 	// encoding/json replaces invalid UTF-8 silently. Reject it so a successful
 	// write cannot change prompts, tool arguments, outputs, or execution IDs.
