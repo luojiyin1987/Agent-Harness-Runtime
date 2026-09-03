@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 const defaultMaxSteps = 16
@@ -143,6 +144,7 @@ type Runtime struct {
 	store    CheckpointStore
 	model    Model
 	tools    ToolExecutor
+	observer Observer
 	maxSteps int
 }
 
@@ -210,6 +212,7 @@ func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 // run shares the same callback and cancellation semantics for new and resumed
 // executions. The caller holds execution ownership for its entire lifetime.
 func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (result Result, runErr error) {
+	runStarted := time.Now()
 	req := initial.Request
 	exec := &execution{status: initial.Result.Status, transitions: append([]Transition{}, initial.Result.Transitions...)}
 	iterations := initial.ModelIterations
@@ -245,7 +248,26 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 		if err := persist(lastSaved, nil, true); err != nil {
 			return lastSaved, err
 		}
+		r.observe(ctx, Event{
+			Type:        EventExecutionStarted,
+			ExecutionID: req.ExecutionID,
+			Status:      StatusCreated,
+		})
 	}
+	defer func() {
+		typeName := terminalEventType(result.Status)
+		if typeName == "" {
+			return
+		}
+		r.observe(ctx, Event{
+			Type:         typeName,
+			ExecutionID:  req.ExecutionID,
+			Status:       result.Status,
+			ModelAttempt: iterations,
+			Duration:     time.Since(runStarted),
+			Error:        runErr,
+		})
+	}()
 	defer func() {
 		result.ExecutionID = req.ExecutionID
 		// Only returned terminal outcomes are persisted here. In particular, a
@@ -280,9 +302,24 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 			_ = exec.transition(StatusCancelled)
 			return snapshot(exec, steps, ""), ctxErr
 		}
+		r.observe(ctx, Event{
+			Type:         EventModelStarted,
+			ExecutionID:  req.ExecutionID,
+			Status:       StatusRunningModel,
+			ModelAttempt: iterations,
+		})
+		modelStarted := time.Now()
 		decision, err := r.model.Next(ctx, ModelInput{
 			Prompt: req.Prompt,
 			Steps:  cloneSteps(steps),
+		})
+		r.observe(ctx, Event{
+			Type:         EventModelCompleted,
+			ExecutionID:  req.ExecutionID,
+			Status:       StatusRunningModel,
+			ModelAttempt: iterations,
+			Duration:     time.Since(modelStarted),
+			Error:        err,
 		})
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -331,7 +368,26 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 				return snapshot(exec, steps, ""), ctxErr
 			}
 
+			r.observe(ctx, Event{
+				Type:         EventToolStarted,
+				ExecutionID:  req.ExecutionID,
+				Status:       StatusRunningTool,
+				ModelAttempt: iterations,
+				ToolCallID:   decision.ToolCall.ID,
+				ToolName:     decision.ToolCall.Name,
+			})
+			toolStarted := time.Now()
 			output, err := r.tools.Execute(ctx, decision.ToolCall)
+			r.observe(ctx, Event{
+				Type:         EventToolCompleted,
+				ExecutionID:  req.ExecutionID,
+				Status:       StatusRunningTool,
+				ModelAttempt: iterations,
+				ToolCallID:   decision.ToolCall.ID,
+				ToolName:     decision.ToolCall.Name,
+				Duration:     time.Since(toolStarted),
+				Error:        err,
+			})
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					_ = exec.transition(StatusCancelled)
