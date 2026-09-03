@@ -302,13 +302,13 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 			_ = exec.transition(StatusCancelled)
 			return snapshot(exec, steps, ""), ctxErr
 		}
-		modelStarted := time.Now()
 		r.observe(ctx, Event{
 			Type:         EventModelStarted,
 			ExecutionID:  req.ExecutionID,
 			Status:       StatusRunningModel,
 			ModelAttempt: iterations,
 		})
+		modelStarted := time.Now()
 		decision, err := r.model.Next(ctx, ModelInput{
 			Prompt: req.Prompt,
 			Steps:  cloneSteps(steps),
@@ -368,7 +368,6 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 				return snapshot(exec, steps, ""), ctxErr
 			}
 
-			toolStarted := time.Now()
 			r.observe(ctx, Event{
 				Type:         EventToolStarted,
 				ExecutionID:  req.ExecutionID,
@@ -377,6 +376,7 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 				ToolCallID:   decision.ToolCall.ID,
 				ToolName:     decision.ToolCall.Name,
 			})
+			toolStarted := time.Now()
 			output, err := r.tools.Execute(ctx, decision.ToolCall)
 			r.observe(ctx, Event{
 				Type:         EventToolCompleted,
