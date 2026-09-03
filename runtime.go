@@ -124,10 +124,12 @@ type ToolExecutor interface {
 }
 
 type Request struct {
-	Prompt string
+	ExecutionID string
+	Prompt      string
 }
 
 type Result struct {
+	ExecutionID string
 	Status      Status
 	Output      string
 	Steps       []Step
@@ -137,6 +139,7 @@ type Result struct {
 type Option func(*Runtime) error
 
 type Runtime struct {
+	store    CheckpointStore
 	model    Model
 	tools    ToolExecutor
 	maxSteps int
@@ -173,26 +176,78 @@ func WithMaxSteps(maxSteps int) Option {
 	}
 }
 
-func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
+func (r *Runtime) Run(ctx context.Context, req Request) (result Result, runErr error) {
 	if ctx == nil {
 		return Result{}, fmt.Errorf("%w: context is required", ErrInvalidRequest)
 	}
 	if req.Prompt == "" {
 		return Result{}, fmt.Errorf("%w: prompt is required", ErrInvalidRequest)
 	}
+	if r.store != nil && req.ExecutionID == "" {
+		return Result{}, fmt.Errorf("%w: execution ID is required with a checkpoint store", ErrInvalidRequest)
+	}
 
 	exec := newExecution()
+	iterations := 0
+	var pendingTool *ToolCall
+	lastSaved := snapshot(exec, nil, "")
+	lastSaved.ExecutionID = req.ExecutionID
+	storeFailed := false
+	persist := func(current Result, cause error, create bool) error {
+		if r.store == nil {
+			return nil
+		}
+		current.ExecutionID = req.ExecutionID
+		checkpoint := Checkpoint{
+			SchemaVersion:   CheckpointSchemaVersion,
+			ExecutionID:     req.ExecutionID,
+			Request:         req,
+			MaxSteps:        r.maxSteps,
+			ModelIterations: iterations,
+			Result:          current,
+			PendingTool:     pendingTool,
+		}
+		if cause != nil {
+			checkpoint.Error = cause.Error()
+		}
+		if err := writeCheckpoint(ctx, r.store, checkpoint, create); err != nil {
+			storeFailed = true
+			return err
+		}
+		lastSaved = cloneResult(current)
+		return nil
+	}
+	if err := persist(lastSaved, nil, true); err != nil {
+		return lastSaved, err
+	}
+	defer func() {
+		result.ExecutionID = req.ExecutionID
+		// Only returned terminal outcomes are persisted here. In particular, a
+		// callback panic must leave the last checkpoint at its callback boundary.
+		if storeFailed || (result.Status != StatusCompleted && result.Status != StatusFailed && result.Status != StatusCancelled) {
+			return
+		}
+		if err := persist(result, runErr, false); err != nil {
+			result = lastSaved
+			runErr = errors.Join(runErr, err)
+		}
+	}()
+
 	if err := exec.transition(StatusRunningModel); err != nil {
 		return Result{}, err
 	}
 
 	steps := make([]Step, 0)
+	if err := persist(snapshot(exec, steps, ""), nil, false); err != nil {
+		return lastSaved, err
+	}
 	for iteration := 0; iteration < r.maxSteps; iteration++ {
 		if err := ctx.Err(); err != nil {
 			_ = exec.transition(StatusCancelled)
 			return snapshot(exec, steps, ""), err
 		}
 
+		iterations++
 		decision, err := r.model.Next(ctx, ModelInput{
 			Prompt: req.Prompt,
 			Steps:  cloneSteps(steps),
@@ -229,6 +284,14 @@ func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 			if err := exec.transition(StatusRunningTool); err != nil {
 				return snapshot(exec, steps, ""), err
 			}
+			pendingTool = &decision.ToolCall
+			if err := persist(snapshot(exec, steps, ""), nil, false); err != nil {
+				return lastSaved, err
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				_ = exec.transition(StatusCancelled)
+				return snapshot(exec, steps, ""), ctxErr
+			}
 
 			output, err := r.tools.Execute(ctx, decision.ToolCall)
 			if err != nil {
@@ -255,9 +318,17 @@ func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 			if err := exec.transition(StatusRunningModel); err != nil {
 				return snapshot(exec, steps, ""), err
 			}
+			pendingTool = nil
+			if err := persist(snapshot(exec, steps, ""), nil, false); err != nil {
+				return lastSaved, err
+			}
 		}
 	}
 
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		_ = exec.transition(StatusCancelled)
+		return snapshot(exec, steps, ""), ctxErr
+	}
 	_ = exec.transition(StatusFailed)
 	return snapshot(exec, steps, ""), ErrStepLimitExceeded
 }
