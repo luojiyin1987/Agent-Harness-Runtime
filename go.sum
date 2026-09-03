@@ -1,2 +1,4 @@
 github.com/luojiyin1987/Agent-Sandbox-Runtime v0.1.0 h1:TBp1Lj2rVQ7BAMVX0jmsTFToYL7jM63UD9uBZ9JXAiI=
 github.com/luojiyin1987/Agent-Sandbox-Runtime v0.1.0/go.mod h1:kLOrJIfXo5bzrtNs4lWESmg6dJu0PTl/B7b5sdgshxg=
+github.com/modelcontextprotocol/go-sdk v1.7.0 h1:yqjY2dsbKAC0LSuWZVBMrHgiG8ukXv6NRo0JiALay44=
+github.com/modelcontextprotocol/go-sdk v1.7.0/go.mod h1:dL7u98E/zjJTGzEq+j30jQ8K2k1mb6LeAH4inEcSGts=
