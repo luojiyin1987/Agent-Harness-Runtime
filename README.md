@@ -51,7 +51,7 @@ result, err := runtime.Run(ctx, harness.Request{
 
 The default execution limit is 16 model iterations. `WithMaxSteps` can lower or raise it. Exhausting the limit fails closed with `ErrStepLimitExceeded`.
 
-Context cancellation produces the explicit `cancelled` terminal state. Model errors, tool errors, invalid model decisions, and step-limit exhaustion produce `failed`.
+Context cancellation produces the explicit `cancelled` terminal state. The runtime checks cancellation both before and immediately after model/tool callbacks, so a successful callback result produced after cancellation is not committed to the execution history or final output. Model errors, tool errors, invalid model decisions, and step-limit exhaustion produce `failed`.
 
 ## PR1 boundary
 

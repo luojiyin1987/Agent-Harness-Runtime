@@ -21,6 +21,12 @@ func (m *scriptedModel) Next(_ context.Context, input ModelInput) (Decision, err
 	return m.decisions[index], nil
 }
 
+type modelFunc func(context.Context, ModelInput) (Decision, error)
+
+func (f modelFunc) Next(ctx context.Context, input ModelInput) (Decision, error) {
+	return f(ctx, input)
+}
+
 type recordingTool struct {
 	outputs map[string]string
 	calls   []ToolCall
@@ -33,6 +39,12 @@ func (t *recordingTool) Execute(_ context.Context, call ToolCall) (string, error
 		return "", t.err
 	}
 	return t.outputs[call.Name], nil
+}
+
+type toolFunc func(context.Context, ToolCall) (string, error)
+
+func (f toolFunc) Execute(ctx context.Context, call ToolCall) (string, error) {
+	return f(ctx, call)
 }
 
 func TestRunCompletesFromModelDecision(t *testing.T) {
@@ -147,6 +159,69 @@ func TestRunHonorsCancellationBeforeModelCall(t *testing.T) {
 	}
 	if len(model.inputs) != 0 {
 		t.Fatalf("model called after cancellation: %+v", model.inputs)
+	}
+}
+
+func TestRunPreservesCancellationAfterSuccessfulModelCallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	model := modelFunc(func(_ context.Context, _ ModelInput) (Decision, error) {
+		cancel()
+		return Decision{Kind: DecisionFinal, Output: "must-not-commit"}, nil
+	})
+	runtime, err := New(model, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := runtime.Run(ctx, Request{Prompt: "work"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if result.Status != StatusCancelled || result.Output != "" {
+		t.Fatalf("Run() result = %+v, want cancelled without committed output", result)
+	}
+	wantTransitions := []Transition{
+		{From: StatusCreated, To: StatusRunningModel},
+		{From: StatusRunningModel, To: StatusCancelled},
+	}
+	if !reflect.DeepEqual(result.Transitions, wantTransitions) {
+		t.Fatalf("transitions = %+v, want %+v", result.Transitions, wantTransitions)
+	}
+}
+
+func TestRunPreservesCancellationAfterSuccessfulToolCallback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	call := ToolCall{ID: "call-1", Name: "cancel"}
+	model := &scriptedModel{decisions: []Decision{{Kind: DecisionToolCall, ToolCall: call}}}
+	tool := toolFunc(func(_ context.Context, got ToolCall) (string, error) {
+		if got != call {
+			t.Fatalf("tool call = %+v, want %+v", got, call)
+		}
+		cancel()
+		return "must-not-commit", nil
+	})
+	runtime, err := New(model, tool, WithMaxSteps(1))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := runtime.Run(ctx, Request{Prompt: "work"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrStepLimitExceeded) {
+		t.Fatalf("Run() error = %v, cancellation must win over step limit", err)
+	}
+	if result.Status != StatusCancelled || len(result.Steps) != 0 {
+		t.Fatalf("Run() result = %+v, want cancelled without committed tool step", result)
+	}
+	wantTransitions := []Transition{
+		{From: StatusCreated, To: StatusRunningModel},
+		{From: StatusRunningModel, To: StatusRunningTool},
+		{From: StatusRunningTool, To: StatusCancelled},
+	}
+	if !reflect.DeepEqual(result.Transitions, wantTransitions) {
+		t.Fatalf("transitions = %+v, want %+v", result.Transitions, wantTransitions)
 	}
 }
 
