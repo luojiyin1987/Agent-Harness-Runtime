@@ -6,7 +6,7 @@ The project focuses on the execution lifecycle that sits between an Agent-facing
 
 ## Status
 
-The deterministic core now supports optional durable execution checkpoints. The default runtime remains in memory. Recovery, real model providers, MCP, sandbox integration, and distributed scheduling are future stages.
+The deterministic core supports optional durable checkpoints and explicit recovery from safe execution boundaries. The default runtime remains in memory. Real model providers, MCP, sandbox integration, and distributed scheduling are future stages.
 
 ## Execution model
 
@@ -34,7 +34,7 @@ A model step returns one of two decisions:
 - `final`: terminate successfully with output
 - `tool_call`: dispatch one identified tool call, capture its result, then return that structured step to the next model invocation
 
-Tool calls require a stable call ID. The runtime records each completed tool step and the full execution-transition sequence in the returned result. These identities and boundaries are intended to support later checkpoint, replay, tracing, and idempotency work without changing the basic loop semantics.
+Tool calls require a stable call ID that is unique within the execution. Reusing a completed call ID fails with `ErrDuplicateToolCall` before dispatch, even if its arguments changed. The runtime records each completed tool step and the full execution-transition sequence in the returned result. These identities and boundaries support checkpoint recovery and later tracing and tool reconciliation work.
 
 ## Core API
 
@@ -85,12 +85,12 @@ _ = checkpoint
 
 `WithCheckpointStore` requires a nonempty `Request.ExecutionID`, which is also returned in `Result`. `Run` atomically creates the initial record and rejects an existing ID with `ErrExecutionExists` before invoking callbacks. Without a store, an execution ID remains optional.
 
-Each versioned `Checkpoint` contains the request, iteration budget, number of model calls attempted as of that snapshot, current result, transition history, completed tool steps, any pending tool call, and terminal error text. Error text is diagnostic; Go error identities are preserved by `Run` but are not reconstructed by `Load`. An interrupted model call may not yet be reflected in the persisted iteration count.
+Each versioned `Checkpoint` contains the request, iteration budget, reserved model-call count, current result, transition history, completed tool steps, any pending tool call, and terminal error text. Error text is diagnostic; Go error identities are preserved during execution but are not reconstructed by `Load`. Schema version 2 saves each model-attempt reservation before invoking the callback. A crash after reservation consumes that attempt even if the callback did not start.
 
 | Save boundary | Recorded state |
 | --- | --- |
 | Execution creation | `created`, request and budget |
-| Before the first model callback | `running_model` |
+| Before every model callback | `running_model`, incremented model-attempt count |
 | Before each tool callback | `running_tool`, full pending tool call |
 | After an accepted tool result, before another model callback | `running_model`, completed step, pending call cleared |
 | Return from execution | `completed`, `failed`, or `cancelled`, with output or error text |
@@ -99,11 +99,37 @@ A checkpoint write must succeed before the next callback starts. Any store error
 
 Writes use a separate context with a five-second timeout so an already cancelled execution can record its cancellation. Store implementations must cooperate with that context; local filesystem system calls cannot be forcibly interrupted by it. Execution cancellation is checked again before callbacks. PR2's rule still applies: callback output observed after cancellation is discarded.
 
-`FileStore` uses only the Go standard library. It writes and syncs a temporary JSON file, publishes it atomically, then syncs the directory. Initial creation uses an exclusive hard link; subsequent saves use rename. Execution IDs are hashed into filenames. New directories use mode `0700` and files use `0600`; the parent directory must already exist. Checkpoint strings must be valid UTF-8. The store checks the schema version, identity, budget, and transition history when reading or writing records.
+`FileStore` uses only the Go standard library. It writes and syncs a temporary JSON file, publishes it atomically, then syncs the directory. Initial creation uses an exclusive hard link; subsequent saves use rename. Execution IDs are hashed into filenames. New directories use mode `0700` and files use `0600`; the parent directory must already exist. Checkpoint strings must be valid UTF-8. The store checks the schema version, identity, budget, and transition history. Version 2 also validates tool-step identities, pending calls, and their relationship to the lifecycle before records can drive recovery.
 
-The file implementation targets trusted local Linux filesystems with atomic link/rename and file/directory sync support. Each execution has one writer; there are no leases or concurrent update arbitration. It stores the latest checkpoint, not all historical versions. A crash can leave ignored temporary files.
+The file implementation targets trusted local Linux filesystems with atomic link/rename, file/directory sync, and advisory `flock` support. `Run` and `Resume` hold an execution-specific lock through loading, callbacks, and the final write. Contenders receive `ErrExecutionBusy` without invoking callbacks. Process exit releases the lock. The `.lock` files remain permanently: deleting one while a process owns it could allow two owners of different inodes. Different execution IDs can run independently. Direct store mutations must follow the same `ExecutionLocker` contract. Distributed leases and network-filesystem coordination are outside this implementation.
 
-**Recovery boundary:** a pending tool call is durable intent, with an unknown external outcome until its result is saved. The tool may have run even when its result is missing. A write error may also occur after publication, so the stored record may be newer than the returned last acknowledged result. `Load` supports inspection only; automatic resume, replay, tool idempotency, and exactly-once execution are not implemented.
+The store keeps the latest checkpoint, not all historical versions. A crash can leave ignored temporary files.
+
+## Recovery
+
+Open the same store in a new process, construct compatible model/tool adapters, then explicitly resume by execution ID:
+
+```go
+result, err := runtime.Resume(ctx, "research-001")
+```
+
+`Resume` loads the saved request, steps, transitions, and budget under the execution lock. The new runtime's `WithMaxSteps` setting applies only to new runs; it cannot reset or override the saved budget. Already completed tools are supplied to the next model input and are never dispatched again. An interrupted model attempt can be retried using the remaining budget, so model requests may be repeated and billed again.
+
+| Saved state | Resume behavior |
+| --- | --- |
+| `created` | Start the model loop using the saved request and budget |
+| `running_model` | Continue with saved tool results; reserve a new model attempt |
+| `running_tool` | Return `ErrToolOutcomeUnknown` without callbacks or checkpoint changes |
+| `completed` | Return the saved result without callbacks or checkpoint changes |
+| `failed` / `cancelled` | Return the saved result and `ErrExecutionTerminal`; preserve diagnostic error text |
+
+Exhausting the original budget produces a persisted `failed` result with `ErrStepLimitExceeded`. Cancellation and store failures follow the same rules as `Run`. Checkpoint loading errors preserve `ErrExecutionNotFound` or the underlying store error via `errors.Is`.
+
+Schema version 1 records from PR3 remain readable. Terminal records can be returned as above; active version 1 records return `ErrRecoveryUnsupported`, because their iteration counts did not reserve interrupted model attempts. They are never silently upgraded for recovery.
+
+Custom stores must implement `ExecutionLocker` to support `Resume`; otherwise it returns `ErrRecoveryUnsupported`. `Run` still works with the original `CheckpointStore` interface under the caller's single-writer guarantee. Recovery assumes compatible adapters and a trusted checkpoint directory.
+
+**Tool boundary:** a pending tool call is durable intent, with an unknown external outcome until its result is saved. The tool may have run even when its result is missing. This PR blocks such recovery; it does not provide a tool-result reconciliation or retry API. Inspect the record with `Load` and investigate the external effect before deciding how to proceed. Changing the call ID does not make a repeated external action idempotent. A write error may occur after publication, so `Resume` always loads the store again rather than trusting an older returned result. Exactly-once execution and automatic recovery scheduling are not claimed.
 
 ## Current boundary
 
@@ -118,10 +144,12 @@ Included:
 - unit tests for observable lifecycle behavior
 - optional checkpoint store and versioned execution records
 - durable file storage and inspection after reopening
+- explicit recovery with durable model-attempt budgeting
+- local execution locks and refusal of uncertain tool replay
 
 Not included:
 
-- crash recovery or replay
+- automatic tool replay or external-outcome reconciliation
 - tool idempotency / exactly-once claims
 - real LLM provider adapters
 - MCP transport
@@ -133,9 +161,8 @@ Not included:
 
 The next stages should extend the same runtime contract rather than replace it:
 
-1. restart/recovery semantics and tool-call idempotency boundary
-2. Agent-Sandbox-Runtime tool executor adapter
-3. MCP tool adapter
-4. traces, metrics, and execution diagnostics
+1. Agent-Sandbox-Runtime tool executor adapter
+2. MCP tool adapter
+3. traces, metrics, and execution diagnostics
 
 The project should stay focused on Harness/Runtime lifecycle semantics rather than becoming an application-specific Agent framework.

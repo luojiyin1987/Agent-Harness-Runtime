@@ -14,6 +14,7 @@ var (
 	ErrInvalidTransition   = errors.New("invalid execution transition")
 	ErrStepLimitExceeded   = errors.New("harness step limit exceeded")
 	ErrToolExecutorMissing = errors.New("tool executor is required")
+	ErrDuplicateToolCall   = errors.New("tool call ID already completed")
 )
 
 type Status string
@@ -176,7 +177,7 @@ func WithMaxSteps(maxSteps int) Option {
 	}
 }
 
-func (r *Runtime) Run(ctx context.Context, req Request) (result Result, runErr error) {
+func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 	if ctx == nil {
 		return Result{}, fmt.Errorf("%w: context is required", ErrInvalidRequest)
 	}
@@ -187,11 +188,34 @@ func (r *Runtime) Run(ctx context.Context, req Request) (result Result, runErr e
 		return Result{}, fmt.Errorf("%w: execution ID is required with a checkpoint store", ErrInvalidRequest)
 	}
 
-	exec := newExecution()
-	iterations := 0
+	// Even an already cancelled Run can create and persist its cancelled state.
+	lockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointWriteTimeout)
+	release, err := r.lockExecution(lockCtx, req.ExecutionID, false)
+	cancel()
+	if err != nil {
+		return Result{}, err
+	}
+	defer release()
+	initial := Checkpoint{
+		SchemaVersion: CheckpointSchemaVersion,
+		ExecutionID:   req.ExecutionID,
+		Request:       req,
+		MaxSteps:      r.maxSteps,
+		Result:        snapshot(newExecution(), nil, ""),
+	}
+	initial.Result.ExecutionID = req.ExecutionID
+	return r.run(ctx, initial, true)
+}
+
+// run shares the same callback and cancellation semantics for new and resumed
+// executions. The caller holds execution ownership for its entire lifetime.
+func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (result Result, runErr error) {
+	req := initial.Request
+	exec := &execution{status: initial.Result.Status, transitions: append([]Transition{}, initial.Result.Transitions...)}
+	iterations := initial.ModelIterations
+	steps := cloneSteps(initial.Result.Steps)
 	var pendingTool *ToolCall
-	lastSaved := snapshot(exec, nil, "")
-	lastSaved.ExecutionID = req.ExecutionID
+	lastSaved := cloneResult(initial.Result)
 	storeFailed := false
 	persist := func(current Result, cause error, create bool) error {
 		if r.store == nil {
@@ -202,7 +226,7 @@ func (r *Runtime) Run(ctx context.Context, req Request) (result Result, runErr e
 			SchemaVersion:   CheckpointSchemaVersion,
 			ExecutionID:     req.ExecutionID,
 			Request:         req,
-			MaxSteps:        r.maxSteps,
+			MaxSteps:        initial.MaxSteps,
 			ModelIterations: iterations,
 			Result:          current,
 			PendingTool:     pendingTool,
@@ -217,8 +241,10 @@ func (r *Runtime) Run(ctx context.Context, req Request) (result Result, runErr e
 		lastSaved = cloneResult(current)
 		return nil
 	}
-	if err := persist(lastSaved, nil, true); err != nil {
-		return lastSaved, err
+	if create {
+		if err := persist(lastSaved, nil, true); err != nil {
+			return lastSaved, err
+		}
 	}
 	defer func() {
 		result.ExecutionID = req.ExecutionID
@@ -233,21 +259,27 @@ func (r *Runtime) Run(ctx context.Context, req Request) (result Result, runErr e
 		}
 	}()
 
-	if err := exec.transition(StatusRunningModel); err != nil {
-		return Result{}, err
+	if exec.status == StatusCreated {
+		if err := exec.transition(StatusRunningModel); err != nil {
+			return lastSaved, err
+		}
 	}
-
-	steps := make([]Step, 0)
-	if err := persist(snapshot(exec, steps, ""), nil, false); err != nil {
-		return lastSaved, err
-	}
-	for iteration := 0; iteration < r.maxSteps; iteration++ {
+	for iterations < initial.MaxSteps {
 		if err := ctx.Err(); err != nil {
 			_ = exec.transition(StatusCancelled)
 			return snapshot(exec, steps, ""), err
 		}
 
 		iterations++
+		// Reserve the attempt durably. A crash in Next consumes this iteration;
+		// Resume must not reset the budget or refund an uncertain attempt.
+		if err := persist(snapshot(exec, steps, ""), nil, false); err != nil {
+			return lastSaved, err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			_ = exec.transition(StatusCancelled)
+			return snapshot(exec, steps, ""), ctxErr
+		}
 		decision, err := r.model.Next(ctx, ModelInput{
 			Prompt: req.Prompt,
 			Steps:  cloneSteps(steps),
@@ -277,6 +309,12 @@ func (r *Runtime) Run(ctx context.Context, req Request) (result Result, runErr e
 			return snapshot(exec, steps, decision.Output), nil
 
 		case DecisionToolCall:
+			for _, step := range steps {
+				if step.Call.ID == decision.ToolCall.ID {
+					_ = exec.transition(StatusFailed)
+					return snapshot(exec, steps, ""), fmt.Errorf("%w: %q", ErrDuplicateToolCall, decision.ToolCall.ID)
+				}
+			}
 			if r.tools == nil {
 				_ = exec.transition(StatusFailed)
 				return snapshot(exec, steps, ""), ErrToolExecutorMissing
