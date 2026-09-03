@@ -1,12 +1,40 @@
 # Agent Harness Runtime
 
-A small, explicit runtime for driving an Agent execution through model decisions, tool calls, and terminal outcomes.
+A small, explicit runtime for driving an Agent execution through model decisions, tool calls, durable recovery boundaries, and terminal outcomes.
 
-The project focuses on the execution lifecycle that sits between an Agent-facing API and lower-level tool/sandbox infrastructure.
+The project focuses on the execution lifecycle between an Agent-facing API and lower-level tool infrastructure. It deliberately keeps model providers, sandbox backends, MCP transports, schedulers, and application-specific orchestration outside the core state machine.
 
 ## Status
 
-The deterministic core supports optional durable checkpoints and explicit recovery from safe execution boundaries. The default runtime remains in memory. Real model providers, MCP, sandbox integration, and distributed scheduling are future stages.
+The v0.1 runtime scope is complete on `main`: deterministic model/tool execution, cancellation semantics, durable checkpoints, safe recovery, local execution locking, Sandbox and MCP tool adapters, execution observability hooks, and a runnable Sandbox dogfood example.
+
+The default runtime remains in memory unless a checkpoint store is configured. Recovery is explicit and conservative: uncertain external tool outcomes are never replayed automatically.
+
+## v0.1 guarantee matrix
+
+| Capability | v0.1 guarantee |
+| --- | --- |
+| Explicit execution lifecycle | Supported and transition-validated |
+| Deterministic model -> tool -> model loop | Supported |
+| Stable tool-call identity | Supported; completed IDs cannot be reused |
+| Bounded model-attempt budget | Supported; default 16 attempts |
+| Cancellation after callbacks | Cancellation wins; late successful callback output is not committed |
+| Versioned checkpoints | Supported; current schema version is 2 |
+| Durable model-attempt reservation | Supported before each model callback |
+| Local crash recovery | Supported from safe checkpoint states |
+| Completed-tool replay on recovery | Refused; completed results are reused |
+| Pending-tool recovery | Refused with `ErrToolOutcomeUnknown` |
+| Local single-execution ownership | Supported through `ExecutionLocker`; `FileStore` uses Linux `flock` |
+| Sandbox tool adapter | Supported through `Agent-Sandbox-Runtime` v0.1.0 |
+| MCP tool adapter | Supported through the official MCP Go SDK |
+| Execution observability hooks | Supported; best-effort and isolated from control flow |
+| Runnable end-to-end Sandbox example | Supported under `examples/sandbox-agent` |
+| Exactly-once external tool effects | Not claimed |
+| Automatic tool replay/reconciliation | Not included |
+| Distributed leases / network-filesystem coordination | Not included |
+| Scheduler / queue / worker runtime | Not included |
+| Multi-agent orchestration | Not included |
+| Built-in real LLM provider | Not included |
 
 ## Execution model
 
@@ -15,12 +43,12 @@ created
    |
    v
 running_model ---------------------> completed
-   |                                     
-   | tool_call                           
-   v                                     
-running_tool                             
-   |                                     
-   +-----------------> running_model     
+   |
+   | tool_call
+   v
+running_tool
+   |
+   +-----------------> running_model
 
 running_model / running_tool
    |             |
@@ -34,7 +62,7 @@ A model step returns one of two decisions:
 - `final`: terminate successfully with output
 - `tool_call`: dispatch one identified tool call, capture its result, then return that structured step to the next model invocation
 
-Tool calls require a stable call ID that is unique within the execution. Reusing a completed call ID fails with `ErrDuplicateToolCall` before dispatch, even if its arguments changed. The runtime records each completed tool step and the full execution-transition sequence in the returned result. These identities and boundaries support checkpoint recovery and later tracing and tool reconciliation work.
+Tool calls require a stable call ID that is unique within the execution. Reusing a completed call ID fails with `ErrDuplicateToolCall` before dispatch, even if its arguments changed. The runtime records completed tool steps and the full transition sequence in the returned result.
 
 ## Core API
 
@@ -49,9 +77,9 @@ result, err := runtime.Run(ctx, harness.Request{
 })
 ```
 
-The default execution limit is 16 model iterations. `WithMaxSteps` can lower or raise it. Exhausting the limit fails closed with `ErrStepLimitExceeded`.
+The default execution limit is 16 model attempts. `WithMaxSteps` can lower or raise it. Exhausting the saved budget fails closed with `ErrStepLimitExceeded`.
 
-Context cancellation produces the explicit `cancelled` terminal state. The runtime checks cancellation both before and immediately after model/tool callbacks, so a successful callback result produced after cancellation is not committed to the execution history or final output. Model errors, tool errors, invalid model decisions, and step-limit exhaustion produce `failed`.
+Context cancellation produces the explicit `cancelled` terminal state. The runtime checks cancellation both before and immediately after model/tool callbacks, so successful callback output produced after cancellation is not committed to execution history or final output. Model errors, tool errors, invalid model decisions, and step-limit exhaustion produce `failed`.
 
 ## Durable checkpoints
 
@@ -60,109 +88,161 @@ store, err := harness.NewFileStore("./checkpoints")
 if err != nil {
     panic(err)
 }
-runtime, err := harness.New(model, tools, harness.WithCheckpointStore(store))
+
+runtime, err := harness.New(
+    model,
+    tools,
+    harness.WithCheckpointStore(store),
+)
 if err != nil {
     panic(err)
 }
-result, runErr := runtime.Run(ctx, harness.Request{
-    ExecutionID: "research-001", // caller-owned, unique for each new execution
+
+result, err := runtime.Run(ctx, harness.Request{
+    ExecutionID: "research-001",
     Prompt:      "inspect this repository",
 })
-// Handle runErr before using result.Output. A store error can leave result
-// at a nonterminal state: the last successfully acknowledged checkpoint.
-if runErr != nil {
-    panic(runErr)
-}
-_ = result
-
-// A new process can open the same directory and inspect the latest record.
-checkpoint, err := store.Load(context.Background(), "research-001")
-if err != nil {
-    panic(err)
-}
-_ = checkpoint
 ```
 
-`WithCheckpointStore` requires a nonempty `Request.ExecutionID`, which is also returned in `Result`. `Run` atomically creates the initial record and rejects an existing ID with `ErrExecutionExists` before invoking callbacks. Without a store, an execution ID remains optional.
+`WithCheckpointStore` requires a nonempty caller-owned `ExecutionID`. `Run` creates the initial record atomically and rejects an existing ID with `ErrExecutionExists` before invoking model or tool callbacks.
 
-Each versioned `Checkpoint` contains the request, iteration budget, reserved model-call count, current result, transition history, completed tool steps, any pending tool call, and terminal error text. Error text is diagnostic; Go error identities are preserved during execution but are not reconstructed by `Load`. Schema version 2 saves each model-attempt reservation before invoking the callback. A crash after reservation consumes that attempt even if the callback did not start.
+Schema version 2 records the request, original step budget, reserved model-attempt count, current result, transition history, completed tool steps, any pending tool call, and diagnostic terminal error text.
 
 | Save boundary | Recorded state |
 | --- | --- |
 | Execution creation | `created`, request and budget |
-| Before every model callback | `running_model`, incremented model-attempt count |
+| Before every model callback | `running_model`, incremented reserved model-attempt count |
 | Before each tool callback | `running_tool`, full pending tool call |
-| After an accepted tool result, before another model callback | `running_model`, completed step, pending call cleared |
-| Return from execution | `completed`, `failed`, or `cancelled`, with output or error text |
+| After accepted tool result | `running_model`, completed step, pending call cleared |
+| Terminal return | `completed`, `failed`, or `cancelled` |
 
-A checkpoint write must succeed before the next callback starts. Any store error stops execution with `ErrCheckpointStore`, preserving the underlying error for `errors.Is`. The returned result is the last acknowledged snapshot; if initial creation failed, it is an unsaved `created` result. A failed terminal write never reports successful completion, and a concurrent execution error or cancellation is retained with `errors.Join`.
+A checkpoint write must succeed before the next callback starts. Store failures stop execution with `ErrCheckpointStore`; the returned result represents the last acknowledged snapshot. Terminal writes use a separate bounded context so an already-cancelled execution can still attempt to persist its cancellation state.
 
-Writes use a separate context with a five-second timeout so an already cancelled execution can record its cancellation. Store implementations must cooperate with that context; local filesystem system calls cannot be forcibly interrupted by it. Execution cancellation is checked again before callbacks. PR2's rule still applies: callback output observed after cancellation is discarded.
-
-`FileStore` uses only the Go standard library. It writes and syncs a temporary JSON file, publishes it atomically, then syncs the directory. Initial creation uses an exclusive hard link; subsequent saves use rename. Execution IDs are hashed into filenames. New directories use mode `0700` and files use `0600`; the parent directory must already exist. Checkpoint strings must be valid UTF-8. The store checks the schema version, identity, budget, and transition history. Version 2 also validates tool-step identities, pending calls, and their relationship to the lifecycle before records can drive recovery.
-
-The file implementation targets trusted local Linux filesystems with atomic link/rename, file/directory sync, and advisory `flock` support. `Run` and `Resume` hold an execution-specific lock through loading, callbacks, and the final write. Contenders receive `ErrExecutionBusy` without invoking callbacks. Process exit releases the lock. The `.lock` files remain permanently: deleting one while a process owns it could allow two owners of different inodes. Different execution IDs can run independently. Direct store mutations must follow the same `ExecutionLocker` contract. Distributed leases and network-filesystem coordination are outside this implementation.
-
-The store keeps the latest checkpoint, not all historical versions. A crash can leave ignored temporary files.
+`FileStore` is designed for trusted local Linux filesystems. It uses atomic file publication, file/directory sync, restrictive file permissions, hashed execution filenames, and per-execution advisory `flock` ownership. Distributed leases and network-filesystem coordination are outside the v0.1 guarantee.
 
 ## Recovery
 
-Open the same store in a new process, construct compatible model/tool adapters, then explicitly resume by execution ID:
+A new process can open the same store, construct compatible adapters, and explicitly resume an execution:
 
 ```go
 result, err := runtime.Resume(ctx, "research-001")
 ```
 
-`Resume` loads the saved request, steps, transitions, and budget under the execution lock. The new runtime's `WithMaxSteps` setting applies only to new runs; it cannot reset or override the saved budget. Already completed tools are supplied to the next model input and are never dispatched again. An interrupted model attempt can be retried using the remaining budget, so model requests may be repeated and billed again.
+`Resume` uses the saved request, tool history, and original model-attempt budget. A new runtime configuration cannot reset the persisted budget. Interrupted model attempts may be invoked again and may therefore be billed again.
 
 | Saved state | Resume behavior |
 | --- | --- |
 | `created` | Start the model loop using the saved request and budget |
-| `running_model` | Continue with saved tool results; reserve a new model attempt |
-| `running_tool` | Return `ErrToolOutcomeUnknown` without callbacks or checkpoint changes |
-| `completed` | Return the saved result without callbacks or checkpoint changes |
-| `failed` / `cancelled` | Return the saved result and `ErrExecutionTerminal`; preserve diagnostic error text |
+| `running_model` | Continue using saved tool results; reserve a new model attempt |
+| `running_tool` | Return `ErrToolOutcomeUnknown`; do not replay the tool |
+| `completed` | Return the saved result without callbacks or checkpoint writes |
+| `failed` / `cancelled` | Return the saved result with `ErrExecutionTerminal` |
 
-Exhausting the original budget produces a persisted `failed` result with `ErrStepLimitExceeded`. Cancellation and store failures follow the same rules as `Run`. Checkpoint loading errors preserve `ErrExecutionNotFound` or the underlying store error via `errors.Is`.
+Completed tools are reused from checkpoint history and never dispatched again. A pending tool call records durable intent only; the external action may already have happened even when its result was never saved. The runtime therefore refuses automatic recovery from that boundary.
 
-Schema version 1 records from PR3 remain readable. Terminal records can be returned as above; active version 1 records return `ErrRecoveryUnsupported`, because their iteration counts did not reserve interrupted model attempts. They are never silently upgraded for recovery.
+Schema version 1 records remain readable. Terminal v1 records can be inspected/returned, while active v1 recovery returns `ErrRecoveryUnsupported` because those records did not durably reserve interrupted model attempts.
 
-Custom stores must implement `ExecutionLocker` to support `Resume`; otherwise it returns `ErrRecoveryUnsupported`. `Run` still works with the original `CheckpointStore` interface under the caller's single-writer guarantee. Recovery assumes compatible adapters and a trusted checkpoint directory.
+## Sandbox ToolExecutor
 
-**Tool boundary:** a pending tool call is durable intent, with an unknown external outcome until its result is saved. The tool may have run even when its result is missing. This PR blocks such recovery; it does not provide a tool-result reconciliation or retry API. Inspect the record with `Load` and investigate the external effect before deciding how to proceed. Changing the call ID does not make a repeated external action idempotent. A write error may occur after publication, so `Resume` always loads the store again rather than trusting an older returned result. Exactly-once execution and automatic recovery scheduling are not claimed.
+`SandboxToolExecutor` adapts the Harness `ToolExecutor` contract to `github.com/luojiyin1987/Agent-Sandbox-Runtime` v0.1.0.
 
-## Current boundary
+A caller-provided `SandboxRequestResolver` maps an Agent-facing `ToolCall` to one `sandbox.ExecRequest`. The Harness core does not interpret shell syntax, workspace policy, Docker, or gVisor configuration.
 
-Included:
+The adapter preserves the Sandbox Runtime contract:
 
-- explicit execution state machine
-- deterministic model -> tool -> model loop
-- stable tool-call identity
-- structured tool-step history
-- bounded iteration count
-- cancellation and failure classification
-- unit tests for observable lifecycle behavior
-- optional checkpoint store and versioned execution records
-- durable file storage and inspection after reopening
-- explicit recovery with durable model-attempt budgeting
-- local execution locks and refusal of uncertain tool replay
+- invalid resolved requests fail before sandbox dispatch
+- sandbox runtime errors fail the Harness tool step while preserving error identity
+- non-zero workload exit codes remain completed tool results when the Sandbox Runtime returns no Go error
+- stable model-facing JSON includes exit code, stdout, stderr, truncation state, and termination reason
 
-Not included:
+## MCP ToolExecutor
 
-- automatic tool replay or external-outcome reconciliation
-- tool idempotency / exactly-once claims
-- real LLM provider adapters
-- MCP transport
-- Agent-Sandbox-Runtime integration
-- OpenTelemetry / metrics
-- queues, workers, scheduling, or multi-agent orchestration
+`MCPToolExecutor` adapts the Harness `ToolExecutor` contract to an already-established MCP caller using the official MCP Go SDK.
 
-## Direction
+The adapter keeps protocol/transport lifecycle outside the Harness core:
 
-The next stages should extend the same runtime contract rather than replace it:
+- a `CallTool` Go error fails the Harness tool step
+- `CallToolResult.IsError=true` is returned to the next model invocation as a tool-level result so the model can self-correct
+- unresolved `input_required` state is refused with `ErrMCPInputRequired`
+- stdio/HTTP transport setup, authentication, server discovery, reconnects, and MCP session ownership remain caller concerns
 
-1. Agent-Sandbox-Runtime tool executor adapter
-2. MCP tool adapter
-3. traces, metrics, and execution diagnostics
+## Observability
 
-The project should stay focused on Harness/Runtime lifecycle semantics rather than becoming an application-specific Agent framework.
+`WithObserver` installs one synchronous, best-effort observer for execution boundaries:
+
+```text
+execution_started
+model_started
+model_completed
+tool_started
+tool_completed
+execution_completed | execution_failed | execution_cancelled
+```
+
+Events expose execution ID, lifecycle state, model-attempt number, tool identity, callback/execution duration, and callback/terminal errors where relevant.
+
+Observer delivery is not part of checkpoint or execution correctness. Observer panics are recovered and cannot change the Harness result. Callback duration measures the model/tool callback itself rather than synchronous `*_started` observer latency.
+
+The core has no OpenTelemetry, Prometheus, exporter, buffering, retry, or sampling dependency. Those can be implemented as observers outside the control plane.
+
+## End-to-end dogfood
+
+The repository includes a runnable integration example:
+
+```sh
+go run ./examples/sandbox-agent
+```
+
+It exercises the real path:
+
+```text
+deterministic local model
+        |
+        v
+Agent-Harness-Runtime
+        |
+        v
+SandboxToolExecutor
+        |
+        v
+Agent-Sandbox-Runtime
+        |
+        v
+Docker backend -> fresh Alpine container
+```
+
+The first model step emits a `shell` tool call. The Sandbox Runtime executes it under its default fail-closed policies, the Harness feeds the stable tool result into the second model step, and the model returns the final answer. The example also prints the execution events provided by the observer API.
+
+Running the Docker workload is an explicit local integration action; ordinary Harness CI compiles the example but does not require Docker.
+
+## Boundary and non-goals
+
+v0.1 intentionally stops at the reusable Harness/Runtime boundary. It does not claim:
+
+- exactly-once tool execution or external side-effect transactions
+- automatic recovery of uncertain tool outcomes
+- distributed execution ownership or leases
+- queues, workers, cron, or scheduling
+- multi-agent orchestration
+- memory/RAG or application-specific Agent state
+- built-in LLM provider integrations
+- ownership of Sandbox Docker/gVisor configuration
+- ownership of MCP connection/authentication/transport lifecycle
+
+The project should remain focused on lifecycle semantics, recovery boundaries, adapter contracts, and execution evidence rather than growing into an application framework.
+
+## Development
+
+Requires Go 1.26 or newer.
+
+```sh
+gofmt -w .
+go vet ./...
+go test -race ./...
+```
+
+For the real Sandbox dogfood path, Docker must also be available locally:
+
+```sh
+go run ./examples/sandbox-agent
+```
