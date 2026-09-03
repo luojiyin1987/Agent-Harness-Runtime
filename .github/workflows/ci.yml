@@ -22,6 +22,10 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
           cache: false
+      - name: Resolve modules
+        run: |
+          go mod tidy
+          cat go.sum
       - name: Check formatting
         run: |
           unformatted="$(gofmt -l .)"
