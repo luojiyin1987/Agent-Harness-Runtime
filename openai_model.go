@@ -126,6 +126,15 @@ func NewOpenAICompatibleModel(config OpenAICompatibleModelConfig) (*OpenAICompat
 	if strings.TrimSpace(config.Model) == "" {
 		return nil, fmt.Errorf("%w: model is required", ErrModelAdapterConfig)
 	}
+	if config.APIKey != "" {
+		parsedEndpoint, err := url.Parse(endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("%w: parse endpoint: %v", ErrModelAdapterConfig, err)
+		}
+		if parsedEndpoint.Scheme != "https" {
+			return nil, fmt.Errorf("%w: API key requires an HTTPS endpoint", ErrModelAdapterConfig)
+		}
+	}
 
 	tools := make([]openAIChatTool, 0, len(config.Tools))
 	seenNames := make(map[string]struct{}, len(config.Tools))
@@ -159,6 +168,13 @@ func NewOpenAICompatibleModel(config OpenAICompatibleModelConfig) (*OpenAICompat
 	client := config.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
+	}
+	if config.APIKey != "" {
+		credentialedClient := *client
+		credentialedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		client = &credentialedClient
 	}
 	return &OpenAICompatibleModel{
 		endpoint:     endpoint,
