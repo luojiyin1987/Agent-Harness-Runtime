@@ -8,6 +8,8 @@ The project focuses on the execution lifecycle between an Agent-facing API and l
 
 The v0.1 runtime scope is complete on `main`: deterministic model/tool execution, cancellation semantics, durable checkpoints, safe recovery, local execution locking, Sandbox and MCP tool adapters, execution observability hooks, and a runnable Sandbox dogfood example.
 
+v0.2 starts by adding a small OpenAI-compatible chat-completions `Model` adapter so real providers such as DeepSeek can drive the existing lifecycle without changing the Harness core.
+
 The default runtime remains in memory unless a checkpoint store is configured. Recovery is explicit and conservative: uncertain external tool outcomes are never replayed automatically.
 
 ## v0.1 guarantee matrix
@@ -80,6 +82,35 @@ result, err := runtime.Run(ctx, harness.Request{
 The default execution limit is 16 model attempts. `WithMaxSteps` can lower or raise it. Exhausting the saved budget fails closed with `ErrStepLimitExceeded`.
 
 Context cancellation produces the explicit `cancelled` terminal state. The runtime checks cancellation both before and immediately after model/tool callbacks, so successful callback output produced after cancellation is not committed to execution history or final output. Model errors, tool errors, invalid model decisions, and step-limit exhaustion produce `failed`.
+
+## OpenAI-compatible Model adapter
+
+`OpenAICompatibleModel` adapts a non-streaming `/chat/completions` endpoint to the Harness `Model` contract. It uses only the Go standard library and works with providers that implement the OpenAI chat-completions tool-call shape, including DeepSeek.
+
+```go
+model, err := harness.NewOpenAICompatibleModel(harness.OpenAICompatibleModelConfig{
+    BaseURL: "https://api.deepseek.com",
+    APIKey:  os.Getenv("DEEPSEEK_API_KEY"),
+    Model:   "deepseek-v4-pro",
+    Tools: []harness.OpenAIToolDefinition{{
+        Name:        "shell",
+        Description: "Run one sandboxed shell command.",
+        Parameters:  json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
+    }},
+})
+```
+
+The adapter reconstructs completed Harness steps as `assistant tool_call -> tool result` messages on every model attempt. Provider tool-call IDs and argument strings are preserved unchanged so checkpoint, duplicate-call, and resolver semantics remain owned by the existing runtime/tool layers.
+
+The v0.2 boundary is intentionally narrow:
+
+- exactly one tool call is accepted per model attempt; multiple tool calls fail closed with `ErrModelResponse`
+- non-`stop` terminal reasons such as token-limit truncation are not committed as final answers
+- provider HTTP failures are classifiable with `ErrModelProvider` and expose status through `ModelProviderHTTPError`
+- context cancellation propagates through the HTTP request
+- API keys require an HTTPS endpoint, are sent only as bearer authorization headers, and are never stored in checkpoints
+- credentialed requests do not follow HTTP redirects, preventing bearer tokens from being forwarded or downgraded
+- streaming, provider registries, retries, backoff, token accounting, and vendor-specific response extensions are not included
 
 ## Durable checkpoints
 
