@@ -66,6 +66,9 @@ func TestOpenAICompatibleModelReturnsFinalDecision(t *testing.T) {
 func TestOpenAICompatibleModelPreservesToolCallAndHistory(t *testing.T) {
 	var got openAIChatRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
@@ -78,7 +81,7 @@ func TestOpenAICompatibleModelPreservesToolCallAndHistory(t *testing.T) {
 					"tool_calls":[{
 						"id":"call-2",
 						"type":"function",
-						"function":{"name":"lookup","arguments":"{\\\"q\\\":\\\"runtime\\\"}"}
+						"function":{"name":"lookup","arguments":"{\"q\":\"runtime\"}"}
 					}]
 				}
 			}]
