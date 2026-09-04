@@ -8,7 +8,7 @@ The project focuses on the execution lifecycle between an Agent-facing API and l
 
 The v0.1 runtime scope is complete on `main`: deterministic model/tool execution, cancellation semantics, durable checkpoints, safe recovery, local execution locking, Sandbox and MCP tool adapters, execution observability hooks, and a runnable Sandbox dogfood example.
 
-v0.2 starts by adding a small OpenAI-compatible chat-completions `Model` adapter so real providers such as DeepSeek can drive the existing lifecycle without changing the Harness core.
+v0.2 starts by adding a small OpenAI-compatible chat-completions `Model` adapter and a runnable DeepSeek -> Harness -> Sandbox -> Docker dogfood path, without changing the Harness core lifecycle.
 
 The default runtime remains in memory unless a checkpoint store is configured. Recovery is explicit and conservative: uncertain external tool outcomes are never replayed automatically.
 
@@ -110,7 +110,8 @@ The v0.2 boundary is intentionally narrow:
 - context cancellation propagates through the HTTP request
 - API keys require an HTTPS endpoint, are sent only as bearer authorization headers, and are never stored in checkpoints
 - credentialed requests do not follow HTTP redirects, preventing bearer tokens from being forwarded or downgraded
-- streaming, provider registries, retries, backoff, token accounting, and vendor-specific response extensions are not included
+- `ExtraBody` can add provider-specific top-level request fields, but cannot override `model`, `messages`, `tools`, or `stream`
+- streaming, provider registries, retries, backoff, token accounting, and provider response extensions are not included
 
 ## Durable checkpoints
 
@@ -246,6 +247,54 @@ The first model step emits a `shell` tool call. The Sandbox Runtime executes it 
 
 Running the Docker workload is an explicit local integration action; ordinary Harness CI compiles the example but does not require Docker.
 
+### DeepSeek + Sandbox dogfood
+
+A second example replaces the deterministic model with the real OpenAI-compatible DeepSeek adapter:
+
+```sh
+DEEPSEEK_API_KEY=... go run ./examples/deepseek-sandbox-agent
+```
+
+Optional overrides:
+
+```sh
+DEEPSEEK_BASE_URL=https://api.deepseek.com \
+DEEPSEEK_MODEL=deepseek-v4-flash \
+DEEPSEEK_API_KEY=... \
+go run ./examples/deepseek-sandbox-agent
+```
+
+The example exercises:
+
+```text
+DeepSeek V4
+    |
+    v
+OpenAICompatibleModel
+    |
+    v
+Agent-Harness-Runtime
+    |
+    +--> durable FileStore checkpoints
+    |
+    +--> execution Observer events
+    |
+    v
+SandboxToolExecutor
+    |
+    v
+Agent-Sandbox-Runtime
+    |
+    v
+Docker -> fresh Alpine container
+```
+
+DeepSeek V4 currently enables thinking mode by default. For tool-calling conversations, DeepSeek requires prior `reasoning_content` to be replayed on subsequent requests when thinking is enabled. The Harness checkpoint schema intentionally does not persist provider-private reasoning state, so this dogfood config uses `ExtraBody` to send `{"thinking":{"type":"disabled"}}`. That keeps the example inside the existing durable Harness contract rather than adding DeepSeek-specific chain-of-thought state to checkpoints.
+
+The probe exposes only one `shell` tool and the resolver accepts one exact fixed command. The sandbox receives no writable host workspace or outbound network configuration from the example. A successful run must produce exactly one completed tool step, the expected sandbox stdout, a completed final answer, and a reloadable completed checkpoint.
+
+Running this path is explicit because it consumes a real DeepSeek API call and requires Docker. CI compiles the example and tests the request-extension plumbing without requiring credentials or external network access.
+
 ## Boundary and non-goals
 
 v0.1 intentionally stops at the reusable Harness/Runtime boundary. It does not claim:
@@ -272,8 +321,14 @@ go vet ./...
 go test -race ./...
 ```
 
-For the real Sandbox dogfood path, Docker must also be available locally:
+For the deterministic Sandbox dogfood path, Docker must also be available locally:
 
 ```sh
 go run ./examples/sandbox-agent
+```
+
+For the real DeepSeek + Sandbox path:
+
+```sh
+DEEPSEEK_API_KEY=... go run ./examples/deepseek-sandbox-agent
 ```

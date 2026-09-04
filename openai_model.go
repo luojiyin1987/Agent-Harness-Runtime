@@ -33,13 +33,16 @@ type OpenAIToolDefinition struct {
 //
 // BaseURL is the provider API root, for example https://api.deepseek.com.
 // The adapter appends /chat/completions. APIKey is optional so local
-// OpenAI-compatible endpoints can be used without authentication.
+// OpenAI-compatible endpoints can be used without authentication. ExtraBody
+// adds provider-specific top-level request fields; model, messages, tools, and
+// stream remain adapter-owned and cannot be overridden.
 type OpenAICompatibleModelConfig struct {
 	BaseURL      string
 	APIKey       string
 	Model        string
 	SystemPrompt string
 	Tools        []OpenAIToolDefinition
+	ExtraBody    map[string]json.RawMessage
 	HTTPClient   *http.Client
 }
 
@@ -51,6 +54,7 @@ type OpenAICompatibleModel struct {
 	model        string
 	systemPrompt string
 	tools        []openAIChatTool
+	extraBody    map[string]json.RawMessage
 	client       *http.Client
 }
 
@@ -136,6 +140,21 @@ func NewOpenAICompatibleModel(config OpenAICompatibleModelConfig) (*OpenAICompat
 		}
 	}
 
+	extraBody := make(map[string]json.RawMessage, len(config.ExtraBody))
+	for key, value := range config.ExtraBody {
+		if strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("%w: extra body field name is required", ErrModelAdapterConfig)
+		}
+		switch key {
+		case "model", "messages", "tools", "stream":
+			return nil, fmt.Errorf("%w: extra body field %q is reserved", ErrModelAdapterConfig, key)
+		}
+		if !json.Valid(value) {
+			return nil, fmt.Errorf("%w: extra body field %q is not valid JSON", ErrModelAdapterConfig, key)
+		}
+		extraBody[key] = append(json.RawMessage(nil), value...)
+	}
+
 	tools := make([]openAIChatTool, 0, len(config.Tools))
 	seenNames := make(map[string]struct{}, len(config.Tools))
 	for _, tool := range config.Tools {
@@ -182,6 +201,7 @@ func NewOpenAICompatibleModel(config OpenAICompatibleModelConfig) (*OpenAICompat
 		model:        config.Model,
 		systemPrompt: config.SystemPrompt,
 		tools:        tools,
+		extraBody:    extraBody,
 		client:       client,
 	}, nil
 }
@@ -214,7 +234,7 @@ func (m *OpenAICompatibleModel) Next(ctx context.Context, input ModelInput) (Dec
 		Messages: m.messages(input),
 		Tools:    m.tools,
 	}
-	body, err := json.Marshal(payload)
+	body, err := marshalOpenAIChatRequest(payload, m.extraBody)
 	if err != nil {
 		return Decision{}, fmt.Errorf("%w: encode request: %v", ErrModelAdapterConfig, err)
 	}
@@ -290,6 +310,25 @@ func (m *OpenAICompatibleModel) Next(ctx context.Context, input ModelInput) (Dec
 		Kind:   DecisionFinal,
 		Output: *choice.Message.Content,
 	}, nil
+}
+
+func marshalOpenAIChatRequest(payload openAIChatRequest, extraBody map[string]json.RawMessage) ([]byte, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(extraBody) == 0 {
+		return body, nil
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range extraBody {
+		fields[key] = value
+	}
+	return json.Marshal(fields)
 }
 
 func (m *OpenAICompatibleModel) messages(input ModelInput) []openAIChatMessage {

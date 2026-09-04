@@ -330,6 +330,53 @@ func TestOpenAICompatibleModelDoesNotFollowRedirectWithAPIKey(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelIncludesExtraBody(t *testing.T) {
+	var got map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":"done","tool_calls":[]}}]}`))
+	}))
+	defer server.Close()
+
+	model, err := NewOpenAICompatibleModel(OpenAICompatibleModelConfig{
+		BaseURL: server.URL,
+		Model:   "model",
+		ExtraBody: map[string]json.RawMessage{
+			"thinking": json.RawMessage(`{"type":"disabled"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleModel() error = %v", err)
+	}
+	if _, err := model.Next(context.Background(), ModelInput{Prompt: "work"}); err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if string(got["thinking"]) != `{"type":"disabled"}` {
+		t.Fatalf("thinking = %s", got["thinking"])
+	}
+}
+
+func TestNewOpenAICompatibleModelRejectsReservedOrInvalidExtraBody(t *testing.T) {
+	tests := []map[string]json.RawMessage{
+		{"model": json.RawMessage(`"override"`)},
+		{"stream": json.RawMessage(`true`)},
+		{"": json.RawMessage(`true`)},
+		{"thinking": json.RawMessage(`{"type":`)},
+	}
+	for i, extraBody := range tests {
+		_, err := NewOpenAICompatibleModel(OpenAICompatibleModelConfig{
+			BaseURL:   "https://example.com",
+			Model:     "model",
+			ExtraBody: extraBody,
+		})
+		if !errors.Is(err, ErrModelAdapterConfig) {
+			t.Fatalf("case %d error = %v, want ErrModelAdapterConfig", i, err)
+		}
+	}
+}
+
 func TestOpenAICompatibleModelOmitsAuthorizationWithoutAPIKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if auth := r.Header.Get("Authorization"); auth != "" {
