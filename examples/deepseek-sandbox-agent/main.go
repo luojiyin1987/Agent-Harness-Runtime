@@ -19,7 +19,7 @@ const (
 	defaultBaseURL  = "https://api.deepseek.com"
 	defaultModel    = "deepseek-v4-flash"
 	executionID     = "deepseek-sandbox-dogfood"
-	expectedCommand = "printf 'deepseek-harness-ok\\n'"
+	expectedCommand = "printf deepseek-harness-ok"
 	expectedOutput  = "deepseek-harness-ok"
 )
 
