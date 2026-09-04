@@ -367,8 +367,8 @@ func TestNewOpenAICompatibleModelRejectsReservedOrInvalidExtraBody(t *testing.T)
 	}
 	for i, extraBody := range tests {
 		_, err := NewOpenAICompatibleModel(OpenAICompatibleModelConfig{
-			BaseURL:  "https://example.com",
-			Model:    "model",
+			BaseURL:   "https://example.com",
+			Model:     "model",
 			ExtraBody: extraBody,
 		})
 		if !errors.Is(err, ErrModelAdapterConfig) {
