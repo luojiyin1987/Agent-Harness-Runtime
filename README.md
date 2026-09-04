@@ -108,7 +108,8 @@ The v0.2 boundary is intentionally narrow:
 - non-`stop` terminal reasons such as token-limit truncation are not committed as final answers
 - provider HTTP failures are classifiable with `ErrModelProvider` and expose status through `ModelProviderHTTPError`
 - context cancellation propagates through the HTTP request
-- API keys are sent only as bearer authorization headers and are never stored in checkpoints
+- API keys require an HTTPS endpoint, are sent only as bearer authorization headers, and are never stored in checkpoints
+- credentialed requests do not follow HTTP redirects, preventing bearer tokens from being forwarded or downgraded
 - streaming, provider registries, retries, backoff, token accounting, and vendor-specific response extensions are not included
 
 ## Durable checkpoints
