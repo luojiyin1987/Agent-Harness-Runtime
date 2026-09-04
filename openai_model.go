@@ -33,7 +33,9 @@ type OpenAIToolDefinition struct {
 //
 // BaseURL is the provider API root, for example https://api.deepseek.com.
 // The adapter appends /chat/completions. APIKey is optional so local
-// OpenAI-compatible endpoints can be used without authentication.
+// OpenAI-compatible endpoints can be used without authentication. ExtraBody
+// adds provider-specific top-level request fields; model, messages, tools, and
+// stream remain adapter-owned and cannot be overridden.
 type OpenAICompatibleModelConfig struct {
 	BaseURL      string
 	APIKey       string
