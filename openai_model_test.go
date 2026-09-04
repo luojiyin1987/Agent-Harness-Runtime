@@ -12,7 +12,7 @@ import (
 
 func TestOpenAICompatibleModelReturnsFinalDecision(t *testing.T) {
 	var got openAIChatRequest
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
 			t.Errorf("path = %q, want /chat/completions", r.URL.Path)
 		}
@@ -32,6 +32,7 @@ func TestOpenAICompatibleModelReturnsFinalDecision(t *testing.T) {
 		APIKey:       "secret",
 		Model:        "deepseek-v4-pro",
 		SystemPrompt: "Use tools when needed.",
+		HTTPClient:   server.Client(),
 		Tools: []OpenAIToolDefinition{{
 			Name:        "shell",
 			Description: "Run a safe command.",
@@ -256,6 +257,7 @@ func TestNewOpenAICompatibleModelValidatesConfiguration(t *testing.T) {
 	tests := []OpenAICompatibleModelConfig{
 		{Model: "model"},
 		{BaseURL: "not-a-url", Model: "model"},
+		{BaseURL: "http://example.com", APIKey: "secret", Model: "model"},
 		{BaseURL: "https://example.com", Model: ""},
 		{
 			BaseURL: "https://example.com",
@@ -279,6 +281,44 @@ func TestNewOpenAICompatibleModelValidatesConfiguration(t *testing.T) {
 		if _, err := NewOpenAICompatibleModel(config); !errors.Is(err, ErrModelAdapterConfig) {
 			t.Fatalf("case %d error = %v, want ErrModelAdapterConfig", i, err)
 		}
+	}
+}
+
+func TestOpenAICompatibleModelDoesNotFollowRedirectWithAPIKey(t *testing.T) {
+	redirected := make(chan string, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		redirected <- r.Header.Get("Authorization")
+	}))
+	defer target.Close()
+
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, &http.Request{}, target.URL+"/chat/completions", http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+
+	model, err := NewOpenAICompatibleModel(OpenAICompatibleModelConfig{
+		BaseURL:    origin.URL,
+		APIKey:     "secret",
+		Model:      "model",
+		HTTPClient: origin.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleModel() error = %v", err)
+	}
+
+	_, err = model.Next(context.Background(), ModelInput{Prompt: "work"})
+	if !errors.Is(err, ErrModelProvider) {
+		t.Fatalf("Next() error = %v, want ErrModelProvider", err)
+	}
+	var statusErr *ModelProviderHTTPError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("Next() error = %#v, want HTTP 307", err)
+	}
+
+	select {
+	case auth := <-redirected:
+		t.Fatalf("redirect target received Authorization = %q", auth)
+	default:
 	}
 }
 
