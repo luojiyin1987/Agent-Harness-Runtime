@@ -292,7 +292,8 @@ func TestOpenAICompatibleModelDoesNotFollowRedirectWithAPIKey(t *testing.T) {
 	defer target.Close()
 
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Redirect(w, &http.Request{}, target.URL+"/chat/completions", http.StatusTemporaryRedirect)
+		w.Header().Set("Location", target.URL+"/chat/completions")
+		w.WriteHeader(http.StatusTemporaryRedirect)
 	}))
 	defer origin.Close()
 
