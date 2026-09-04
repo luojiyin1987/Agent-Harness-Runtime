@@ -8,7 +8,7 @@ The project focuses on the execution lifecycle between an Agent-facing API and l
 
 The v0.1 runtime scope is complete on `main`: deterministic model/tool execution, cancellation semantics, durable checkpoints, safe recovery, local execution locking, Sandbox and MCP tool adapters, execution observability hooks, and a runnable Sandbox dogfood example.
 
-v0.2 starts by adding a small OpenAI-compatible chat-completions `Model` adapter and a runnable DeepSeek -> Harness -> Sandbox -> Docker dogfood path, without changing the Harness core lifecycle.
+v0.2 starts by adding a small OpenAI-compatible chat-completions `Model` adapter, a runnable DeepSeek -> Harness -> Sandbox -> Docker dogfood path, and deterministic execution evals for end-to-end lifecycle invariants, without changing the Harness core lifecycle.
 
 The default runtime remains in memory unless a checkpoint store is configured. Recovery is explicit and conservative: uncertain external tool outcomes are never replayed automatically.
 
@@ -294,6 +294,18 @@ DeepSeek V4 currently enables thinking mode by default. For tool-calling convers
 The probe exposes only one `shell` tool and the resolver accepts one exact fixed command. The sandbox receives no writable host workspace or outbound network configuration from the example. A successful run must produce exactly one completed tool step, the expected sandbox stdout, a completed final answer, and a reloadable completed checkpoint.
 
 Running this path is explicit because it consumes a real DeepSeek API call and requires Docker. CI compiles the example and tests the request-extension plumbing without requiring credentials or external network access.
+
+## Execution evals
+
+`TestExecutionEvalSuite` adds a deterministic acceptance layer above the focused unit tests. It runs complete Harness executions and scores terminal status, error identity, committed tool effects, step count, and ordered observer traces.
+
+```sh
+go test -race -run TestExecutionEvalSuite -v .
+```
+
+Current cases cover direct final output, one allowed tool round trip, unauthorized tool rejection without a side effect, duplicate completed tool-call identity without redispatch, and bounded termination of a runaway tool loop.
+
+See [EVALS.md](EVALS.md) for the scorecard and the boundary between deterministic runtime evals and the live DeepSeek dogfood.
 
 ## Boundary and non-goals
 
