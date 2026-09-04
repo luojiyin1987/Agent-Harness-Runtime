@@ -29,6 +29,9 @@ func (t *evalGuardedTool) Execute(_ context.Context, call ToolCall) (string, err
 }
 
 func evalEffectNames(calls []ToolCall) []string {
+	if len(calls) == 0 {
+		return nil
+	}
 	names := make([]string, len(calls))
 	for i, call := range calls {
 		names[i] = call.Name
@@ -255,9 +258,22 @@ func TestExecutionEvalSuite(t *testing.T) {
 			if len(observer.events) == 0 {
 				t.Fatal("observer recorded no events")
 			}
+			executionID := "eval-" + test.name
+			for _, event := range observer.events {
+				if event.ExecutionID != executionID {
+					t.Fatalf("event execution ID = %q, want %q: %+v", event.ExecutionID, executionID, event)
+				}
+			}
 			terminal := observer.events[len(observer.events)-1]
 			if terminal.Status != test.wantStatus {
 				t.Fatalf("terminal event status = %q, want %q", terminal.Status, test.wantStatus)
+			}
+			if test.wantErr == nil {
+				if terminal.Error != nil {
+					t.Fatalf("terminal event error = %v, want nil", terminal.Error)
+				}
+			} else if !errors.Is(terminal.Error, test.wantErr) {
+				t.Fatalf("terminal event error = %v, want errors.Is(..., %v)", terminal.Error, test.wantErr)
 			}
 		})
 	}
