@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenAICompatibleModelReturnsFinalDecision(t *testing.T) {
@@ -221,11 +222,13 @@ func TestOpenAICompatibleModelClassifiesProviderHTTPError(t *testing.T) {
 
 func TestOpenAICompatibleModelPreservesContextCancellation(t *testing.T) {
 	started := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		close(started)
-		<-r.Context().Done()
+		<-release
 	}))
 	defer server.Close()
+	defer close(release)
 
 	model, err := NewOpenAICompatibleModel(OpenAICompatibleModelConfig{
 		BaseURL: server.URL,
@@ -244,7 +247,11 @@ func TestOpenAICompatibleModelPreservesContextCancellation(t *testing.T) {
 	<-started
 	cancel()
 
-	err = <-errCh
+	select {
+	case err = <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Next() did not return promptly after context cancellation")
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Next() error = %v, want context.Canceled", err)
 	}
