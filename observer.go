@@ -59,16 +59,49 @@ func WithObserver(observer Observer) Option {
 	}
 }
 
+// WithObservers installs multiple synchronous best-effort observers.
+//
+// Each observer receives the same event in registration order. A panic from one
+// observer is isolated before delivery continues to the remaining observers, so
+// a failed telemetry/export path cannot suppress another observer such as a
+// durable trace recorder. Nil observers and an empty observer list are rejected.
+func WithObservers(observers ...Observer) Option {
+	return func(runtime *Runtime) error {
+		if len(observers) == 0 {
+			return fmt.Errorf("%w: at least one observer is required", ErrInvalidRequest)
+		}
+		group := make(observerGroup, len(observers))
+		for index, observer := range observers {
+			if observer == nil {
+				return fmt.Errorf("%w: observer %d is required", ErrInvalidRequest, index)
+			}
+			group[index] = observer
+		}
+		runtime.observer = group
+		return nil
+	}
+}
+
+type observerGroup []Observer
+
+func (group observerGroup) OnEvent(ctx context.Context, event Event) {
+	for _, observer := range group {
+		deliverObserver(observer, ctx, event)
+	}
+}
+
+func deliverObserver(observer Observer, ctx context.Context, event Event) {
+	defer func() {
+		_ = recover()
+	}()
+	observer.OnEvent(ctx, event)
+}
+
 func (r *Runtime) observe(ctx context.Context, event Event) {
 	if r.observer == nil {
 		return
 	}
-	func() {
-		defer func() {
-			_ = recover()
-		}()
-		r.observer.OnEvent(ctx, event)
-	}()
+	deliverObserver(r.observer, ctx, event)
 }
 
 func terminalEventType(status Status) EventType {
