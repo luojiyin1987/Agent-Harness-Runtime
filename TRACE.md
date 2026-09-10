@@ -95,6 +95,58 @@ A missing terminal event is valid. A process may stop after a durable lifecycle 
 
 `TraceInspection` summarizes only data already present in the trace: record count, execution ID, first/last record times, highest model-attempt number, tool-call count, last lifecycle status, and terminal classification when available. It does not reconstruct prompts, outputs, tool arguments, or checkpoint state.
 
+## Comparison
+
+`DiffTrace` compares two validated execution timelines and reports the first stable lifecycle divergence:
+
+```go
+left, err := harness.ReadTrace("./baseline.jsonl")
+if err != nil {
+    panic(err)
+}
+right, err := harness.ReadTrace("./candidate.jsonl")
+if err != nil {
+    panic(err)
+}
+
+diff, err := harness.DiffTrace(left, right)
+if err != nil {
+    panic(err)
+}
+
+fmt.Printf(
+    "equivalent=%t attempt_delta=%d tool_delta=%d\n",
+    diff.Equivalent,
+    diff.ModelAttemptDelta,
+    diff.ToolCallDelta,
+)
+if diff.FirstDivergence != nil {
+    fmt.Printf("first divergence at sequence %d\n", diff.FirstDivergence.Sequence)
+}
+```
+
+The comparison intentionally uses only stable lifecycle fields:
+
+- event type
+- lifecycle status
+- model-attempt number
+- tool name
+- allowlisted error code
+- provider HTTP status
+
+It intentionally ignores:
+
+- execution ID
+- wall-clock timestamps
+- callback/execution duration
+- tool-call ID
+
+Those ignored fields are expected to vary between otherwise equivalent executions. Duration remains available for performance analysis, but it is not a behavioral equality signal.
+
+If one trace is a strict prefix of the other, the first extra event is the divergence and the shorter side is represented as absent. `TraceDiff` also carries both `TraceInspection` summaries plus model-attempt and tool-call count deltas.
+
+This is a lifecycle diff, not semantic output comparison. It cannot determine whether two final answers mean the same thing, whether two tool arguments are equivalent, or whether one model decision was better.
+
 ## Data boundary
 
 The trace does **not** persist:
@@ -114,7 +166,7 @@ This keeps the first trace format focused on lifecycle debugging and avoids turn
 
 ## Correctness boundary
 
-Trace persistence and inspection remain outside Harness execution correctness. A recorder write or fsync failure is retained by the recorder and exposed through `Err`/`Close`, but cannot fail, cancel, retry, or otherwise change the Agent execution. Reading or inspecting a trace likewise never changes checkpoints or resumes an execution.
+Trace persistence, inspection, and comparison remain outside Harness execution correctness. A recorder write or fsync failure is retained by the recorder and exposed through `Err`/`Close`, but cannot fail, cancel, retry, or otherwise change the Agent execution. Reading, inspecting, or comparing a trace likewise never changes checkpoints or resumes an execution.
 
 Checkpoints and traces therefore serve different purposes:
 
@@ -125,7 +177,7 @@ checkpoint
 
 trace
     -> ordered execution history
-    -> debugging / inspection / later diffing
+    -> debugging / inspection / comparison
 ```
 
-The current trace layer does not provide replay, trace merging, payload capture, indexing, remote export, OpenTelemetry integration, automatic rotation, or a command-line UI. Those should remain separate layers built on top of a stable recorded timeline.
+The current trace layer does not provide replay, semantic output comparison, trace merging, payload capture, indexing, remote export, OpenTelemetry integration, automatic rotation, or a command-line UI. Those should remain separate layers built on top of a stable recorded timeline.
