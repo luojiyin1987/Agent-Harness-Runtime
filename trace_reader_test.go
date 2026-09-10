@@ -120,9 +120,23 @@ func TestReadTraceRejectsMalformedStructure(t *testing.T) {
 			},
 		},
 		{
+			name: "invalid event status",
+			mutate: func(records []TraceRecord) []TraceRecord {
+				records[1].Status = StatusRunningTool
+				return records
+			},
+		},
+		{
 			name: "missing timestamp",
 			mutate: func(records []TraceRecord) []TraceRecord {
 				records[1].RecordedAt = time.Time{}
+				return records
+			},
+		},
+		{
+			name: "http status without provider error",
+			mutate: func(records []TraceRecord) []TraceRecord {
+				records[1].HTTPStatus = 503
 				return records
 			},
 		},
