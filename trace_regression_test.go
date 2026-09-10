@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -11,12 +12,13 @@ func TestTraceRegressionBaselines(t *testing.T) {
 	const lookupArguments = `{"q":"runtime"}`
 
 	tests := []struct {
-		name      string
-		baseline  string
-		decisions []Decision
-		allowed   map[string]string
-		outputs   map[string]string
-		wantErr   error
+		name        string
+		baseline    string
+		decisions   []Decision
+		allowed     map[string]string
+		outputs     map[string]string
+		wantErr     error
+		wantEffects []string
 	}{
 		{
 			name:     "allowed tool round trip",
@@ -35,8 +37,9 @@ func TestTraceRegressionBaselines(t *testing.T) {
 					Output: "tool-backed-answer",
 				},
 			},
-			allowed: map[string]string{"lookup": lookupArguments},
-			outputs: map[string]string{"lookup": "evidence"},
+			allowed:     map[string]string{"lookup": lookupArguments},
+			outputs:     map[string]string{"lookup": "evidence"},
+			wantEffects: []string{"lookup"},
 		},
 		{
 			name:     "unauthorized tool",
@@ -86,6 +89,9 @@ func TestTraceRegressionBaselines(t *testing.T) {
 			} else if !errors.Is(runErr, test.wantErr) {
 				t.Fatalf("Run() error = %v, want errors.Is(..., %v)", runErr, test.wantErr)
 			}
+			if got := evalEffectNames(tool.effects); !reflect.DeepEqual(got, test.wantEffects) {
+				t.Fatalf("tool effects = %v, want %v", got, test.wantEffects)
+			}
 			if err := recorder.Close(); err != nil {
 				t.Fatalf("Close() error = %v", err)
 			}
@@ -101,6 +107,9 @@ func TestTraceRegressionBaselines(t *testing.T) {
 			if len(observer.events) != len(actual) {
 				t.Fatalf("fan-out observer events = %d, trace records = %d", len(observer.events), len(actual))
 			}
+			for index, event := range observer.events {
+				assertTraceRecordMatchesEvent(t, actual[index], event)
+			}
 
 			diff, err := DiffTrace(baseline, actual)
 			if err != nil {
@@ -110,5 +119,21 @@ func TestTraceRegressionBaselines(t *testing.T) {
 				t.Fatalf("trace regression: attempts delta=%d tools delta=%d first divergence=%+v", diff.ModelAttemptDelta, diff.ToolCallDelta, diff.FirstDivergence)
 			}
 		})
+	}
+}
+
+func assertTraceRecordMatchesEvent(t *testing.T, record TraceRecord, event Event) {
+	t.Helper()
+	errorCode, httpStatus := classifyTraceError(event)
+	if record.Type != event.Type ||
+		record.ExecutionID != event.ExecutionID ||
+		record.Status != event.Status ||
+		record.ModelAttempt != event.ModelAttempt ||
+		record.ToolCallID != event.ToolCallID ||
+		record.ToolName != event.ToolName ||
+		record.DurationNanos != event.Duration.Nanoseconds() ||
+		record.ErrorCode != errorCode ||
+		record.HTTPStatus != httpStatus {
+		t.Fatalf("trace record does not match observer event:\nrecord = %+v\nevent  = %+v", record, event)
 	}
 }
