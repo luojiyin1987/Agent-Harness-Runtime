@@ -34,8 +34,8 @@ type TraceInspection struct {
 //
 // Validation is intentionally structural rather than replay-oriented. It checks
 // the current schema version, contiguous sequence numbers, timestamps, known
-// event types, non-negative numeric fields, and stable execution identity. It
-// does not require a terminal event because a durable trace may end at a crash.
+// event/status pairs, non-negative numeric fields, and stable execution identity.
+// It does not require a terminal event because a durable trace may end at a crash.
 func ReadTrace(path string) ([]TraceRecord, error) {
 	if path == "" {
 		return nil, fmt.Errorf("%w: trace path is required", ErrInvalidRequest)
@@ -130,6 +130,9 @@ func validateTraceRecord(record TraceRecord, expectedSequence uint64) error {
 	if !knownTraceEvent(record.Type) {
 		return fmt.Errorf("unknown event type %q", record.Type)
 	}
+	if !validTraceEventStatus(record.Type, record.Status) {
+		return fmt.Errorf("event %q has invalid status %q", record.Type, record.Status)
+	}
 	if record.ModelAttempt < 0 {
 		return errors.New("model_attempt must not be negative")
 	}
@@ -138,6 +141,9 @@ func validateTraceRecord(record TraceRecord, expectedSequence uint64) error {
 	}
 	if record.HTTPStatus < 0 {
 		return errors.New("http_status must not be negative")
+	}
+	if record.HTTPStatus != 0 && record.ErrorCode != "model_provider_http_error" {
+		return errors.New("http_status requires model_provider_http_error")
 	}
 	return nil
 }
@@ -153,6 +159,25 @@ func knownTraceEvent(eventType EventType) bool {
 		EventExecutionFailed,
 		EventExecutionCancelled:
 		return true
+	default:
+		return false
+	}
+}
+
+func validTraceEventStatus(eventType EventType, status Status) bool {
+	switch eventType {
+	case EventExecutionStarted:
+		return status == StatusCreated
+	case EventModelStarted, EventModelCompleted:
+		return status == StatusRunningModel
+	case EventToolStarted, EventToolCompleted:
+		return status == StatusRunningTool
+	case EventExecutionCompleted:
+		return status == StatusCompleted
+	case EventExecutionFailed:
+		return status == StatusFailed
+	case EventExecutionCancelled:
+		return status == StatusCancelled
 	default:
 		return false
 	}
