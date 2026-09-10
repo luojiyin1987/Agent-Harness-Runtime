@@ -155,7 +155,7 @@ func checkStoreContext(ctx context.Context) error {
 }
 
 func validateCheckpoint(checkpoint Checkpoint) error {
-	if checkpoint.SchemaVersion != 1 && checkpoint.SchemaVersion != CheckpointSchemaVersion {
+	if checkpoint.SchemaVersion < 1 || checkpoint.SchemaVersion > CheckpointSchemaVersion {
 		return fmt.Errorf("%w: unsupported schema version %d", ErrInvalidCheckpoint, checkpoint.SchemaVersion)
 	}
 	if checkpoint.ExecutionID == "" || checkpoint.ExecutionID != checkpoint.Request.ExecutionID || checkpoint.ExecutionID != checkpoint.Result.ExecutionID {
@@ -163,6 +163,12 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 	}
 	if checkpoint.Request.Prompt == "" || checkpoint.MaxSteps <= 0 || checkpoint.ModelIterations < 0 || checkpoint.ModelIterations > checkpoint.MaxSteps {
 		return fmt.Errorf("%w: invalid request or iteration budget", ErrInvalidCheckpoint)
+	}
+	if checkpoint.MaxModelRetries < 0 || checkpoint.ModelRetries < 0 || checkpoint.ModelRetries > checkpoint.MaxModelRetries {
+		return fmt.Errorf("%w: invalid model retry budget", ErrInvalidCheckpoint)
+	}
+	if checkpoint.SchemaVersion < 3 && (checkpoint.MaxModelRetries != 0 || checkpoint.ModelRetries != 0) {
+		return fmt.Errorf("%w: retry state requires checkpoint schema version 3", ErrInvalidCheckpoint)
 	}
 	status := StatusCreated
 	for _, transition := range checkpoint.Result.Transitions {
@@ -174,7 +180,7 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 	if status != checkpoint.Result.Status {
 		return fmt.Errorf("%w: status does not match transition history", ErrInvalidCheckpoint)
 	}
-	if checkpoint.SchemaVersion == CheckpointSchemaVersion {
+	if checkpoint.SchemaVersion >= 2 {
 		if err := validateRecoveryState(checkpoint); err != nil {
 			return err
 		}
