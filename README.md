@@ -8,9 +8,9 @@ The project focuses on the execution lifecycle between an Agent-facing API and l
 
 The v0.1 runtime scope is complete on `main`: deterministic model/tool execution, cancellation semantics, durable checkpoints, safe recovery, local execution locking, Sandbox and MCP tool adapters, execution observability hooks, and a runnable Sandbox dogfood example.
 
-v0.2 adds a small OpenAI-compatible chat-completions `Model` adapter, a runnable DeepSeek -> Harness -> Sandbox -> Docker dogfood path, deterministic execution evals, durable execution traces and lifecycle diffs, callback deadlines, and bounded durable model retries without changing the Harness state-machine shape.
+v0.2 adds a small OpenAI-compatible chat-completions `Model` adapter, a runnable DeepSeek -> Harness -> Sandbox -> Docker dogfood path, deterministic execution evals, durable execution traces and lifecycle diffs, callback deadlines, bounded durable model retries, and optional pending-tool reconciliation without changing the Harness state-machine shape.
 
-The default runtime remains in memory unless a checkpoint store is configured. Recovery is explicit and conservative: uncertain external tool outcomes are never replayed automatically.
+The default runtime remains in memory unless a checkpoint store is configured. Recovery is explicit and conservative: uncertain external tool outcomes are never replayed automatically, while a tool adapter may prove a prior call completed through an optional reconciliation capability.
 
 ## v0.1 guarantee matrix
 
@@ -25,14 +25,15 @@ The default runtime remains in memory unless a checkpoint store is configured. R
 | Durable model-attempt reservation | Supported before each model callback |
 | Local crash recovery | Supported from safe checkpoint states |
 | Completed-tool replay on recovery | Refused; completed results are reused |
-| Pending-tool recovery | Refused with `ErrToolOutcomeUnknown` |
+| Pending-tool recovery | Fail closed unless `ToolOutcomeReconciler` proves the original call completed |
 | Local single-execution ownership | Supported through `ExecutionLocker`; `FileStore` uses Linux `flock` |
 | Sandbox tool adapter | Supported through `Agent-Sandbox-Runtime` v0.1.0 |
 | MCP tool adapter | Supported through the official MCP Go SDK |
 | Execution observability hooks | Supported; best-effort and isolated from control flow |
 | Runnable end-to-end Sandbox example | Supported under `examples/sandbox-agent` |
 | Exactly-once external tool effects | Not claimed |
-| Automatic tool replay/reconciliation | Not included |
+| Automatic tool replay | Not included |
+| Read-only tool outcome reconciliation | Optional capability on `ToolExecutor` |
 | Distributed leases / network-filesystem coordination | Not included |
 | Scheduler / queue / worker runtime | Not included |
 | Multi-agent orchestration | Not included |
@@ -168,7 +169,7 @@ Schema version 3 records the request, original step budget, reserved model-attem
 | Before every model callback | `running_model`, incremented reserved model-attempt count |
 | After a retryable model failure | `running_model`, incremented durable model-retry count |
 | Before each tool callback | `running_tool`, full pending tool call |
-| After accepted tool result | `running_model`, completed step, pending call cleared |
+| After accepted or externally reconciled tool result | `running_model`, completed step, pending call cleared |
 | Terminal return | `completed`, `failed`, or `cancelled` |
 
 A checkpoint write must succeed before the next callback starts. Store failures stop execution with `ErrCheckpointStore`; the returned result represents the last acknowledged snapshot. Terminal writes use a separate bounded context so an already-cancelled execution can still attempt to persist its cancellation state.
@@ -189,11 +190,13 @@ result, err := runtime.Resume(ctx, "research-001")
 | --- | --- |
 | `created` | Start the model loop using the saved request and budgets |
 | `running_model` | Continue using saved tool results; reserve a new model attempt |
-| `running_tool` | Return `ErrToolOutcomeUnknown`; do not replay the tool |
+| `running_tool` | Ask optional `ToolOutcomeReconciler`; continue only when it proves completed, otherwise return `ErrToolOutcomeUnknown` |
 | `completed` | Return the saved result without callbacks or checkpoint writes |
 | `failed` / `cancelled` | Return the saved result with `ErrExecutionTerminal` |
 
-Completed tools are reused from checkpoint history and never dispatched again. A pending tool call records durable intent only; the external action may already have happened even when its result was never saved. The runtime therefore refuses automatic recovery from that boundary.
+Completed tools are reused from checkpoint history and never dispatched again. A pending tool call records durable intent only; the external action may already have happened even when its result was never saved. The runtime never re-executes that call automatically. If the `ToolExecutor` also implements `ToolOutcomeReconciler`, `Resume` may query external state and accept only a proven completed result. Unknown outcomes still fail closed with `ErrToolOutcomeUnknown`.
+
+A reconciled completion is converted into the ordinary completed `Step`, persisted with `running_tool -> running_model`, and saved before another model callback runs. Reconciliation itself must be read-only; it is safe to repeat if a checkpoint write fails. See [TOOL_RECONCILIATION.md](TOOL_RECONCILIATION.md) for the contract and failure boundaries.
 
 Schema version 2 records remain resumable and retain their original behavior with automatic model retries disabled. Schema version 1 records remain readable; terminal v1 records can be inspected/returned, while active v1 recovery returns `ErrRecoveryUnsupported` because those records did not durably reserve interrupted model attempts.
 
@@ -335,7 +338,7 @@ See [EVALS.md](EVALS.md) for the scorecard and the boundary between deterministi
 v0.1 intentionally stops at the reusable Harness/Runtime boundary. It does not claim:
 
 - exactly-once tool execution or external side-effect transactions
-- automatic recovery of uncertain tool outcomes
+- automatic replay or assumed completion of uncertain tool outcomes
 - distributed execution ownership or leases
 - queues, workers, cron, or scheduling
 - multi-agent orchestration
