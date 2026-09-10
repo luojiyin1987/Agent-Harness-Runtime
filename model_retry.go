@@ -54,22 +54,22 @@ func IsTransientModelError(err error) bool {
 	return errors.Is(err, ErrModelProvider)
 }
 
-func (r *Runtime) retryModel(ctx context.Context, err error, checkpoint Checkpoint, iterations, modelRetries int) (bool, error) {
-	if checkpoint.MaxModelRetries <= modelRetries || iterations >= checkpoint.MaxSteps || !IsTransientModelError(err) {
-		return false, nil
-	}
-	if r.modelRetry.MaxRetries != checkpoint.MaxModelRetries {
-		return false, fmt.Errorf("%w: model retry policy does not match saved execution", ErrRecoveryUnsupported)
-	}
+func (r *Runtime) canRetryModel(err error, checkpoint Checkpoint, iterations, modelRetries int) bool {
+	return checkpoint.MaxModelRetries > modelRetries &&
+		iterations < checkpoint.MaxSteps &&
+		IsTransientModelError(err)
+}
+
+func (r *Runtime) waitModelRetry(ctx context.Context) error {
 	if r.modelRetry.Delay == 0 {
-		return true, nil
+		return nil
 	}
 	timer := time.NewTimer(r.modelRetry.Delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return ctx.Err()
 	case <-timer.C:
-		return true, nil
+		return nil
 	}
 }
