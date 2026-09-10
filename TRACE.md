@@ -87,7 +87,9 @@ The reader validates:
 - non-negative duration/model-attempt/HTTP-status fields
 - HTTP status only when the error code is `model_provider_http_error`
 
-`InspectTrace` additionally checks that timestamps do not move backwards and that a terminal event, when present, is the final record.
+`InspectTrace` additionally checks that a terminal event, when present, is the final record.
+
+Sequence numbers are the ordering authority. `recorded_at` is descriptive wall-clock metadata and is not required to be monotonic because host time can move backwards after NTP, VM clock, or manual adjustments.
 
 A missing terminal event is valid. A process may stop after a durable lifecycle record but before the execution can emit its terminal observer event. Such a trace returns an inspection with `Complete=false`, preserving the distinction between an incomplete execution history and a malformed trace.
 
