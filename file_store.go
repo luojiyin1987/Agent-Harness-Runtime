@@ -164,7 +164,7 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 	if checkpoint.Request.Prompt == "" || checkpoint.MaxSteps <= 0 || checkpoint.ModelIterations < 0 || checkpoint.ModelIterations > checkpoint.MaxSteps {
 		return fmt.Errorf("%w: invalid request or iteration budget", ErrInvalidCheckpoint)
 	}
-	if checkpoint.MaxModelRetries < 0 || checkpoint.ModelRetries < 0 || checkpoint.ModelRetries > checkpoint.MaxModelRetries {
+	if checkpoint.MaxModelRetries < 0 || checkpoint.ModelRetries < 0 || checkpoint.ModelRetries > checkpoint.MaxModelRetries || checkpoint.ModelRetries > checkpoint.ModelIterations {
 		return fmt.Errorf("%w: invalid model retry budget", ErrInvalidCheckpoint)
 	}
 	if checkpoint.SchemaVersion < 3 && (checkpoint.MaxModelRetries != 0 || checkpoint.ModelRetries != 0) {
