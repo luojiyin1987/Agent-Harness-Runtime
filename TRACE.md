@@ -11,7 +11,6 @@ recorder, err := harness.NewFileTraceRecorder("./run-001.jsonl")
 if err != nil {
     panic(err)
 }
-defer recorder.Close()
 
 runtime, err := harness.New(
     model,
@@ -22,12 +21,17 @@ if err != nil {
     panic(err)
 }
 
-result, err := runtime.Run(ctx, harness.Request{
+result, runErr := runtime.Run(ctx, harness.Request{
     ExecutionID: "run-001",
     Prompt:      "inspect this repository",
 })
+traceErr := recorder.Close()
 
-if traceErr := recorder.Err(); traceErr != nil {
+_ = result
+if runErr != nil {
+    // Handle the Harness execution error.
+}
+if traceErr != nil {
     // Trace persistence failed. The Harness result above is unchanged because
     // observers remain outside the execution correctness boundary.
 }
@@ -43,7 +47,8 @@ Each line is one `TraceRecord` with:
 - model-attempt number where relevant
 - tool-call ID and tool name where relevant
 - callback/execution duration in nanoseconds where relevant
-- error text for failed callbacks or failed/cancelled terminal events
+- an allowlisted error code for failed callbacks or failed/cancelled terminal events
+- HTTP status for provider HTTP failures
 
 The recorder fsyncs each accepted line before `OnEvent` returns. The target file must be new; an existing trace is never overwritten or appended to implicitly.
 
@@ -57,9 +62,12 @@ The trace does **not** persist:
 - tool output
 - checkpoint snapshots
 - provider-private reasoning state
+- raw error text or provider response bodies
 - API keys or other provider credentials
 
-This keeps the first trace format focused on lifecycle debugging and avoids turning the observer stream into a second execution-state store.
+Errors are reduced to an allowlisted classification such as `model_provider_http_error`, `tool_callback_error`, or `step_limit_exceeded`. For `ModelProviderHTTPError`, only the HTTP status is retained; the provider response body is discarded before serialization.
+
+This keeps the first trace format focused on lifecycle debugging and avoids turning the observer stream into a second execution-state store or log of provider payloads.
 
 ## Correctness boundary
 
