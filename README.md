@@ -8,7 +8,7 @@ The project focuses on the execution lifecycle between an Agent-facing API and l
 
 The v0.1 runtime scope is complete on `main`: deterministic model/tool execution, cancellation semantics, durable checkpoints, safe recovery, local execution locking, Sandbox and MCP tool adapters, execution observability hooks, and a runnable Sandbox dogfood example.
 
-v0.2 starts by adding a small OpenAI-compatible chat-completions `Model` adapter, a runnable DeepSeek -> Harness -> Sandbox -> Docker dogfood path, and deterministic execution evals for end-to-end lifecycle invariants, without changing the Harness core lifecycle.
+v0.2 adds a small OpenAI-compatible chat-completions `Model` adapter, a runnable DeepSeek -> Harness -> Sandbox -> Docker dogfood path, deterministic execution evals, durable execution traces and lifecycle diffs, callback deadlines, and bounded durable model retries without changing the Harness state-machine shape.
 
 The default runtime remains in memory unless a checkpoint store is configured. Recovery is explicit and conservative: uncertain external tool outcomes are never replayed automatically.
 
@@ -21,7 +21,7 @@ The default runtime remains in memory unless a checkpoint store is configured. R
 | Stable tool-call identity | Supported; completed IDs cannot be reused |
 | Bounded model-attempt budget | Supported; default 16 attempts |
 | Cancellation after callbacks | Cancellation wins; late successful callback output is not committed |
-| Versioned checkpoints | Supported; current schema version is 2 |
+| Versioned checkpoints | Supported; current schema version is 3 |
 | Durable model-attempt reservation | Supported before each model callback |
 | Local crash recovery | Supported from safe checkpoint states |
 | Completed-tool replay on recovery | Refused; completed results are reused |
@@ -111,7 +111,29 @@ The v0.2 boundary is intentionally narrow:
 - API keys require an HTTPS endpoint, are sent only as bearer authorization headers, and are never stored in checkpoints
 - credentialed requests do not follow HTTP redirects, preventing bearer tokens from being forwarded or downgraded
 - `ExtraBody` can add provider-specific top-level request fields, but cannot override `model`, `messages`, `tools`, or `stream`
-- streaming, provider registries, retries, backoff, token accounting, and provider response extensions are not included
+- streaming, provider registries, adapter-owned retries/backoff, token accounting, and provider response extensions are not included
+
+## Model retries
+
+Automatic model retry is disabled by default. `WithModelRetry` enables a bounded retry budget for transient model failures:
+
+```go
+runtime, err := harness.New(
+    model,
+    tools,
+    harness.WithMaxSteps(16),
+    harness.WithModelRetry(harness.ModelRetryPolicy{
+        MaxRetries: 2,
+        Delay:      250 * time.Millisecond,
+    }),
+)
+```
+
+Retries are limited to model callbacks. Tool callbacks are never retried automatically because a failed or timed-out tool may already have produced an external side effect.
+
+The built-in classifier retries `ErrModelTimeout`, generic provider transport failures, and provider HTTP 408/429/500/502/503/504. `ErrModelResponse`, caller cancellation, and other model errors fail immediately.
+
+Every retry consumes the ordinary `MaxSteps` model-attempt budget. The retry budget is also persisted independently so a crash/restart cannot reset already acknowledged automatic retries. See [MODEL_RETRIES.md](MODEL_RETRIES.md) for the durable accounting and recovery boundary.
 
 ## Durable checkpoints
 
@@ -138,12 +160,13 @@ result, err := runtime.Run(ctx, harness.Request{
 
 `WithCheckpointStore` requires a nonempty caller-owned `ExecutionID`. `Run` creates the initial record atomically and rejects an existing ID with `ErrExecutionExists` before invoking model or tool callbacks.
 
-Schema version 2 records the request, original step budget, reserved model-attempt count, current result, transition history, completed tool steps, any pending tool call, and diagnostic terminal error text.
+Schema version 3 records the request, original step budget, reserved model-attempt count, configured/consumed automatic model-retry budget, current result, transition history, completed tool steps, any pending tool call, and diagnostic terminal error text.
 
 | Save boundary | Recorded state |
 | --- | --- |
-| Execution creation | `created`, request and budget |
+| Execution creation | `created`, request and budgets |
 | Before every model callback | `running_model`, incremented reserved model-attempt count |
+| After a retryable model failure | `running_model`, incremented durable model-retry count |
 | Before each tool callback | `running_tool`, full pending tool call |
 | After accepted tool result | `running_model`, completed step, pending call cleared |
 | Terminal return | `completed`, `failed`, or `cancelled` |
@@ -160,11 +183,11 @@ A new process can open the same store, construct compatible adapters, and explic
 result, err := runtime.Resume(ctx, "research-001")
 ```
 
-`Resume` uses the saved request, tool history, and original model-attempt budget. A new runtime configuration cannot reset the persisted budget. Interrupted model attempts may be invoked again and may therefore be billed again.
+`Resume` uses the saved request, tool history, original model-attempt budget, and saved automatic model-retry budget. A new runtime configuration cannot reset those persisted budgets. Interrupted model attempts may be invoked again and may therefore be billed again; crash recovery is separate from automatic retry accounting.
 
 | Saved state | Resume behavior |
 | --- | --- |
-| `created` | Start the model loop using the saved request and budget |
+| `created` | Start the model loop using the saved request and budgets |
 | `running_model` | Continue using saved tool results; reserve a new model attempt |
 | `running_tool` | Return `ErrToolOutcomeUnknown`; do not replay the tool |
 | `completed` | Return the saved result without callbacks or checkpoint writes |
@@ -172,7 +195,7 @@ result, err := runtime.Resume(ctx, "research-001")
 
 Completed tools are reused from checkpoint history and never dispatched again. A pending tool call records durable intent only; the external action may already have happened even when its result was never saved. The runtime therefore refuses automatic recovery from that boundary.
 
-Schema version 1 records remain readable. Terminal v1 records can be inspected/returned, while active v1 recovery returns `ErrRecoveryUnsupported` because those records did not durably reserve interrupted model attempts.
+Schema version 2 records remain resumable and retain their original behavior with automatic model retries disabled. Schema version 1 records remain readable; terminal v1 records can be inspected/returned, while active v1 recovery returns `ErrRecoveryUnsupported` because those records did not durably reserve interrupted model attempts.
 
 ## Sandbox ToolExecutor
 
@@ -215,7 +238,7 @@ Events expose execution ID, lifecycle state, model-attempt number, tool identity
 
 Observer delivery is not part of checkpoint or execution correctness. Observer panics are recovered and cannot change the Harness result. Callback duration measures the model/tool callback itself rather than synchronous `*_started` observer latency.
 
-The core has no OpenTelemetry, Prometheus, exporter, buffering, retry, or sampling dependency. Those can be implemented as observers outside the control plane.
+The observability layer has no OpenTelemetry, Prometheus, exporter, buffering, retry, or sampling dependency. Those can be implemented as observers outside the control plane.
 
 ## End-to-end dogfood
 
