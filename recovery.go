@@ -13,12 +13,12 @@ var (
 	ErrToolOutcomeUnknown  = errors.New("pending tool outcome is unknown")
 )
 
-// Resume continues a version 2 checkpoint from created or running_model using
-// the saved request, history, and remaining budget. A running_tool checkpoint
-// requires external reconciliation and is never replayed. Completed executions
-// return their saved result; failed/cancelled ones return ErrExecutionTerminal.
-// The store must implement ExecutionLocker. Model and tool adapters are supplied
-// by the caller and must remain compatible with the original execution.
+// Resume continues a resumable checkpoint from created or running_model using
+// the saved request, history, attempt budget, and retry budget. Version 2
+// checkpoints remain resumable with automatic model retries disabled. A
+// running_tool checkpoint requires external reconciliation and is never replayed.
+// Completed executions return their saved result; failed/cancelled ones return
+// ErrExecutionTerminal. The store must implement ExecutionLocker.
 func (r *Runtime) Resume(ctx context.Context, executionID string) (Result, error) {
 	if ctx == nil || executionID == "" || r.store == nil {
 		return Result{}, fmt.Errorf("%w: resume requires context, execution ID, and checkpoint store", ErrInvalidRequest)
@@ -45,8 +45,11 @@ func (r *Runtime) Resume(ctx context.Context, executionID string) (Result, error
 	case StatusFailed, StatusCancelled:
 		return checkpoint.Result, fmt.Errorf("%w: %s: %s", ErrExecutionTerminal, checkpoint.Result.Status, checkpoint.Error)
 	}
-	if checkpoint.SchemaVersion != CheckpointSchemaVersion {
+	if checkpoint.SchemaVersion < 2 {
 		return checkpoint.Result, fmt.Errorf("%w: schema version %d lacks durable model-attempt reservations", ErrRecoveryUnsupported, checkpoint.SchemaVersion)
+	}
+	if checkpoint.SchemaVersion >= 3 && checkpoint.MaxModelRetries > 0 && r.modelRetry.MaxRetries != checkpoint.MaxModelRetries {
+		return checkpoint.Result, fmt.Errorf("%w: saved model retry budget is %d but runtime configures %d", ErrRecoveryUnsupported, checkpoint.MaxModelRetries, r.modelRetry.MaxRetries)
 	}
 	if checkpoint.PendingTool != nil {
 		return checkpoint.Result, fmt.Errorf("%w: call %q", ErrToolOutcomeUnknown, checkpoint.PendingTool.ID)
@@ -114,7 +117,7 @@ func validateRecoveryState(checkpoint Checkpoint) error {
 	}
 	switch result.Status {
 	case StatusCreated:
-		if checkpoint.ModelIterations != 0 || pending != 0 {
+		if checkpoint.ModelIterations != 0 || checkpoint.ModelRetries != 0 || pending != 0 {
 			return invalid("created execution has progress")
 		}
 	case StatusRunningModel:
