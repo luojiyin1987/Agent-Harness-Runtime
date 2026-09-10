@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -108,7 +109,7 @@ func TestFileTraceRecorderRecordsSuccessfulLifecycle(t *testing.T) {
 	}
 }
 
-func TestFileTraceRecorderPersistsErrorText(t *testing.T) {
+func TestFileTraceRecorderClassifiesErrorWithoutRawText(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "failure.jsonl")
 	recorder, err := NewFileTraceRecorder(path)
 	if err != nil {
@@ -119,18 +120,63 @@ func TestFileTraceRecorderPersistsErrorText(t *testing.T) {
 		Type:        EventExecutionFailed,
 		ExecutionID: "trace-failed",
 		Status:      StatusFailed,
-		Error:       errors.New("provider unavailable"),
+		Error:       errors.New("provider unavailable with secret-token"),
 	})
 	if err := recorder.Close(); err != nil {
 		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret-token") {
+		t.Fatalf("trace contains raw error text: %s", data)
 	}
 
 	records := readTraceRecords(t, path)
 	if len(records) != 1 {
 		t.Fatalf("trace record count = %d, want 1", len(records))
 	}
-	if records[0].Error != "provider unavailable" {
-		t.Fatalf("trace error = %q", records[0].Error)
+	if records[0].ErrorCode != "execution_error" {
+		t.Fatalf("trace error code = %q", records[0].ErrorCode)
+	}
+}
+
+func TestFileTraceRecorderRedactsProviderResponseBody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provider-failure.jsonl")
+	recorder, err := NewFileTraceRecorder(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder.OnEvent(context.Background(), Event{
+		Type:        EventModelCompleted,
+		ExecutionID: "trace-provider-failed",
+		Status:      StatusRunningModel,
+		Error: &ModelProviderHTTPError{
+			StatusCode: 401,
+			Body:       `{"error":"credential secret-api-key rejected"}`,
+		},
+	})
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret-api-key") || strings.Contains(string(data), "credential") {
+		t.Fatalf("trace contains provider response body: %s", data)
+	}
+
+	records := readTraceRecords(t, path)
+	if len(records) != 1 {
+		t.Fatalf("trace record count = %d, want 1", len(records))
+	}
+	if records[0].ErrorCode != "model_provider_http_error" || records[0].HTTPStatus != 401 {
+		t.Fatalf("provider trace classification = %+v", records[0])
 	}
 }
 
