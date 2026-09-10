@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,8 @@ const TraceSchemaVersion = 1
 
 // TraceRecord is the stable, serializable form of one observed Harness event.
 // It intentionally records lifecycle metadata only: prompts, model output,
-// tool arguments, tool output, and provider-private reasoning are excluded.
+// tool arguments, tool output, provider-private reasoning, and raw error text
+// are excluded.
 type TraceRecord struct {
 	SchemaVersion int       `json:"schema_version"`
 	Sequence      uint64    `json:"sequence"`
@@ -27,7 +29,8 @@ type TraceRecord struct {
 	ToolCallID    string    `json:"tool_call_id,omitempty"`
 	ToolName      string    `json:"tool_name,omitempty"`
 	DurationNanos int64     `json:"duration_ns,omitempty"`
-	Error         string    `json:"error,omitempty"`
+	ErrorCode     string    `json:"error_code,omitempty"`
+	HTTPStatus    int       `json:"http_status,omitempty"`
 }
 
 // FileTraceRecorder persists observer events as one JSON object per line.
@@ -84,6 +87,7 @@ func (r *FileTraceRecorder) OnEvent(_ context.Context, event Event) {
 		return
 	}
 
+	errorCode, httpStatus := classifyTraceError(event)
 	record := TraceRecord{
 		SchemaVersion: TraceSchemaVersion,
 		Sequence:      r.sequence + 1,
@@ -95,9 +99,8 @@ func (r *FileTraceRecorder) OnEvent(_ context.Context, event Event) {
 		ToolCallID:    event.ToolCallID,
 		ToolName:      event.ToolName,
 		DurationNanos: event.Duration.Nanoseconds(),
-	}
-	if event.Error != nil {
-		record.Error = event.Error.Error()
+		ErrorCode:     errorCode,
+		HTTPStatus:    httpStatus,
 	}
 
 	data, err := json.Marshal(record)
@@ -147,4 +150,64 @@ func (r *FileTraceRecorder) Close() error {
 		r.err = fmt.Errorf("closing execution trace: %w", err)
 	}
 	return r.err
+}
+
+// classifyTraceError converts an arbitrary execution error into an allowlisted
+// trace classification. It never serializes Error() text. Provider HTTP errors
+// retain only their status code; response bodies are deliberately discarded.
+func classifyTraceError(event Event) (string, int) {
+	if event.Error == nil {
+		return "", 0
+	}
+
+	var providerHTTPError *ModelProviderHTTPError
+	if errors.As(event.Error, &providerHTTPError) {
+		return "model_provider_http_error", providerHTTPError.StatusCode
+	}
+
+	switch {
+	case errors.Is(event.Error, context.Canceled):
+		return "context_canceled", 0
+	case errors.Is(event.Error, context.DeadlineExceeded):
+		return "context_deadline_exceeded", 0
+	case errors.Is(event.Error, ErrStepLimitExceeded):
+		return "step_limit_exceeded", 0
+	case errors.Is(event.Error, ErrDuplicateToolCall):
+		return "duplicate_tool_call", 0
+	case errors.Is(event.Error, ErrInvalidDecision):
+		return "invalid_model_decision", 0
+	case errors.Is(event.Error, ErrInvalidTransition):
+		return "invalid_execution_transition", 0
+	case errors.Is(event.Error, ErrInvalidRequest):
+		return "invalid_request", 0
+	case errors.Is(event.Error, ErrToolExecutorMissing):
+		return "tool_executor_missing", 0
+	case errors.Is(event.Error, ErrCheckpointStore):
+		return "checkpoint_store_error", 0
+	case errors.Is(event.Error, ErrExecutionBusy):
+		return "execution_busy", 0
+	case errors.Is(event.Error, ErrRecoveryUnsupported):
+		return "recovery_unsupported", 0
+	case errors.Is(event.Error, ErrExecutionTerminal):
+		return "execution_terminal", 0
+	case errors.Is(event.Error, ErrToolOutcomeUnknown):
+		return "tool_outcome_unknown", 0
+	case errors.Is(event.Error, ErrMCPInputRequired):
+		return "mcp_input_required", 0
+	case errors.Is(event.Error, ErrModelAdapterConfig):
+		return "model_adapter_config_error", 0
+	case errors.Is(event.Error, ErrModelProvider):
+		return "model_provider_error", 0
+	case errors.Is(event.Error, ErrModelResponse):
+		return "model_response_error", 0
+	}
+
+	switch event.Type {
+	case EventModelCompleted:
+		return "model_callback_error", 0
+	case EventToolCompleted:
+		return "tool_callback_error", 0
+	default:
+		return "execution_error", 0
+	}
 }
