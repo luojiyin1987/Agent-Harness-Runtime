@@ -141,11 +141,12 @@ type Result struct {
 type Option func(*Runtime) error
 
 type Runtime struct {
-	store    CheckpointStore
-	model    Model
-	tools    ToolExecutor
-	observer Observer
-	maxSteps int
+	store      CheckpointStore
+	model      Model
+	tools      ToolExecutor
+	observer   Observer
+	maxSteps   int
+	modelRetry ModelRetryPolicy
 }
 
 func New(model Model, tools ToolExecutor, options ...Option) (*Runtime, error) {
@@ -199,11 +200,12 @@ func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 	}
 	defer release()
 	initial := Checkpoint{
-		SchemaVersion: CheckpointSchemaVersion,
-		ExecutionID:   req.ExecutionID,
-		Request:       req,
-		MaxSteps:      r.maxSteps,
-		Result:        snapshot(newExecution(), nil, ""),
+		SchemaVersion:   CheckpointSchemaVersion,
+		ExecutionID:     req.ExecutionID,
+		Request:         req,
+		MaxSteps:        r.maxSteps,
+		MaxModelRetries: r.modelRetry.MaxRetries,
+		Result:          snapshot(newExecution(), nil, ""),
 	}
 	initial.Result.ExecutionID = req.ExecutionID
 	return r.run(ctx, initial, true)
@@ -216,6 +218,7 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 	req := initial.Request
 	exec := &execution{status: initial.Result.Status, transitions: append([]Transition{}, initial.Result.Transitions...)}
 	iterations := initial.ModelIterations
+	modelRetries := initial.ModelRetries
 	steps := cloneSteps(initial.Result.Steps)
 	var pendingTool *ToolCall
 	lastSaved := cloneResult(initial.Result)
@@ -231,6 +234,8 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 			Request:         req,
 			MaxSteps:        initial.MaxSteps,
 			ModelIterations: iterations,
+			MaxModelRetries: initial.MaxModelRetries,
+			ModelRetries:    modelRetries,
 			Result:          current,
 			PendingTool:     pendingTool,
 		}
@@ -325,6 +330,19 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				_ = exec.transition(StatusCancelled)
 				return snapshot(exec, steps, ""), ctxErr
+			}
+			if r.canRetryModel(err, initial, iterations, modelRetries) {
+				modelRetries++
+				// Reserve the retry budget durably before waiting or issuing the
+				// next provider call. A crash cannot reset an acknowledged retry.
+				if persistErr := persist(snapshot(exec, steps, ""), nil, false); persistErr != nil {
+					return lastSaved, persistErr
+				}
+				if waitErr := r.waitModelRetry(ctx); waitErr != nil {
+					_ = exec.transition(StatusCancelled)
+					return snapshot(exec, steps, ""), waitErr
+				}
+				continue
 			}
 			_ = exec.transition(StatusFailed)
 			return snapshot(exec, steps, ""), fmt.Errorf("model step: %w", err)
