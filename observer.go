@@ -66,16 +66,15 @@ func WithObserver(observer Observer) Option {
 // a failed telemetry/export path cannot suppress another observer such as a
 // durable trace recorder. Nil observers and an empty observer list are rejected.
 func WithObservers(observers ...Observer) Option {
+	group := append(observerGroup(nil), observers...)
 	return func(runtime *Runtime) error {
-		if len(observers) == 0 {
+		if len(group) == 0 {
 			return fmt.Errorf("%w: at least one observer is required", ErrInvalidRequest)
 		}
-		group := make(observerGroup, len(observers))
-		for index, observer := range observers {
+		for index, observer := range group {
 			if observer == nil {
 				return fmt.Errorf("%w: observer %d is required", ErrInvalidRequest, index)
 			}
-			group[index] = observer
 		}
 		runtime.observer = group
 		return nil
