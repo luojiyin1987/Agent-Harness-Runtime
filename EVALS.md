@@ -8,7 +8,13 @@ Run the deterministic suite with:
 go test -race -run TestExecutionEvalSuite -v .
 ```
 
-The ordinary repository CI also runs these cases through `go test -race ./...`.
+Run the durable trace regression baselines with:
+
+```sh
+go test -race -run TestTraceRegressionBaselines -v .
+```
+
+The ordinary repository CI also runs both through `go test -race ./...`.
 
 ## Scorecard
 
@@ -20,7 +26,7 @@ The ordinary repository CI also runs these cases through `go test -race ./...`.
 | Duplicate tool identity | First effect is committed once; repeated completed call ID fails before redispatch |
 | Runaway tool loop | Model/tool loop is bounded by the configured model-attempt budget and terminates with `ErrStepLimitExceeded` |
 
-Every case asserts:
+Every deterministic execution case asserts:
 
 - terminal Harness status
 - error identity where a failure is expected
@@ -29,6 +35,31 @@ Every case asserts:
 - ordered observer event types
 - consistent execution ID across the trace
 - terminal observer status and error classification
+
+## Durable trace regression baselines
+
+`TestTraceRegressionBaselines` dogfoods the trace stack as one CI path:
+
+```text
+deterministic Runtime.Run
+        -> WithObservers
+        -> FileTraceRecorder
+        -> JSONL
+        -> ReadTrace
+        -> DiffTrace
+        -> committed golden lifecycle
+```
+
+The suite intentionally keeps only two golden traces:
+
+- one successful model -> tool -> model round trip
+- one policy-rejected tool execution
+
+These cover both the normal lifecycle and the durable error-classification path without duplicating the full execution eval matrix.
+
+The baselines compare stable lifecycle fields only. Per-run execution IDs, timestamps, durations, and tool-call IDs are ignored by `DiffTrace`, so normal runtime noise does not require fixture updates. A deliberate change to event order, lifecycle status, model-attempt numbering, tool name, error code, or provider HTTP status requires reviewing and updating the corresponding golden trace.
+
+The fixtures live under `testdata/traces/`. They contain only the same lifecycle metadata allowed by the production trace contract; no prompts, model output, tool arguments/output, provider response bodies, raw error text, or credentials are stored.
 
 ## Boundary
 
@@ -50,15 +81,18 @@ The real DeepSeek + Sandbox dogfood example remains the complementary live-model
 DEEPSEEK_API_KEY=... go run ./examples/deepseek-sandbox-agent
 ```
 
-Keeping the two layers separate makes failures easier to classify:
+Keeping the layers separate makes failures easier to classify:
 
 ```text
 deterministic execution eval fails
         -> Harness / policy / lifecycle regression
+
+trace regression baseline fails
+        -> persisted lifecycle shape changed
 
 deterministic eval passes
 live DeepSeek dogfood fails
         -> provider / prompt / model behavior / external integration
 ```
 
-New Harness guarantees should add a deterministic eval case when they affect observable end-to-end execution behavior.
+New Harness guarantees should add a deterministic eval case when they affect observable end-to-end execution behavior. A golden trace should be added only when the persisted lifecycle itself is important enough to keep stable across changes.
