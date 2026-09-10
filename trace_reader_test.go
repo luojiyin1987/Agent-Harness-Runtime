@@ -86,6 +86,18 @@ func TestInspectTraceAcceptsIncompleteExecution(t *testing.T) {
 	}
 }
 
+func TestInspectTraceUsesSequenceWhenWallClockMovesBackwards(t *testing.T) {
+	records := validInspectionRecords()
+	records[2].RecordedAt = records[1].RecordedAt.Add(-time.Second)
+	inspection, err := InspectTrace(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inspection.Complete || inspection.RecordCount != len(records) {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+}
+
 func TestReadTraceRejectsMalformedStructure(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -164,23 +176,13 @@ func TestReadTraceRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestInspectTraceRejectsTimelineCorruption(t *testing.T) {
-	t.Run("terminal before end", func(t *testing.T) {
-		records := validInspectionRecords()
-		records[4].Type = EventExecutionFailed
-		records[4].Status = StatusFailed
-		if _, err := InspectTrace(records); !errors.Is(err, ErrInvalidTrace) {
-			t.Fatalf("InspectTrace() error = %v, want ErrInvalidTrace", err)
-		}
-	})
-
-	t.Run("timestamp moves backwards", func(t *testing.T) {
-		records := validInspectionRecords()
-		records[2].RecordedAt = records[1].RecordedAt.Add(-time.Nanosecond)
-		if _, err := InspectTrace(records); !errors.Is(err, ErrInvalidTrace) {
-			t.Fatalf("InspectTrace() error = %v, want ErrInvalidTrace", err)
-		}
-	})
+func TestInspectTraceRejectsTerminalBeforeEnd(t *testing.T) {
+	records := validInspectionRecords()
+	records[4].Type = EventExecutionFailed
+	records[4].Status = StatusFailed
+	if _, err := InspectTrace(records); !errors.Is(err, ErrInvalidTrace) {
+		t.Fatalf("InspectTrace() error = %v, want ErrInvalidTrace", err)
+	}
 }
 
 func TestReadTraceRejectsEmptyPath(t *testing.T) {
