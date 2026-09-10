@@ -166,6 +166,10 @@ func classifyTraceError(event Event) (string, int) {
 	}
 
 	switch {
+	case errors.Is(event.Error, ErrModelTimeout):
+		return "model_timeout", 0
+	case errors.Is(event.Error, ErrToolTimeout):
+		return "tool_timeout", 0
 	case errors.Is(event.Error, context.Canceled):
 		return "context_canceled", 0
 	case errors.Is(event.Error, context.DeadlineExceeded):
