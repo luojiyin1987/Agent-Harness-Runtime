@@ -4,7 +4,7 @@
 
 The trace is intentionally narrower than a checkpoint. It records what execution boundary happened and when, without duplicating execution state or model/tool payloads.
 
-## Usage
+## Recording
 
 ```go
 recorder, err := harness.NewFileTraceRecorder("./run-001.jsonl")
@@ -52,6 +52,49 @@ Each line is one `TraceRecord` with:
 
 The recorder fsyncs each accepted line before `OnEvent` returns. The target file must be new; an existing trace is never overwritten or appended to implicitly.
 
+## Inspection
+
+`ReadTrace` reads the JSONL file and validates its structural contract before returning records:
+
+```go
+records, err := harness.ReadTrace("./run-001.jsonl")
+if err != nil {
+    panic(err)
+}
+
+inspection, err := harness.InspectTrace(records)
+if err != nil {
+    panic(err)
+}
+
+fmt.Printf(
+    "records=%d attempts=%d tools=%d complete=%t status=%s\n",
+    inspection.RecordCount,
+    inspection.ModelAttempts,
+    inspection.ToolCalls,
+    inspection.Complete,
+    inspection.TerminalStatus,
+)
+```
+
+The reader validates:
+
+- current trace schema version
+- contiguous sequence numbers starting at 1
+- non-zero record timestamps
+- known event types and valid event/status pairs
+- stable execution identity within the file
+- non-negative duration/model-attempt/HTTP-status fields
+- HTTP status only when the error code is `model_provider_http_error`
+
+`InspectTrace` additionally checks that a terminal event, when present, is the final record.
+
+Sequence numbers are the ordering authority. `recorded_at` is descriptive wall-clock metadata and is not required to be monotonic because host time can move backwards after NTP, VM clock, or manual adjustments.
+
+A missing terminal event is valid. A process may stop after a durable lifecycle record but before the execution can emit its terminal observer event. Such a trace returns an inspection with `Complete=false`, preserving the distinction between an incomplete execution history and a malformed trace.
+
+`TraceInspection` summarizes only data already present in the trace: record count, execution ID, first/last record times, highest model-attempt number, tool-call count, last lifecycle status, and terminal classification when available. It does not reconstruct prompts, outputs, tool arguments, or checkpoint state.
+
 ## Data boundary
 
 The trace does **not** persist:
@@ -71,7 +114,7 @@ This keeps the first trace format focused on lifecycle debugging and avoids turn
 
 ## Correctness boundary
 
-Trace persistence is best-effort with respect to Harness execution. A write or fsync failure is retained by the recorder and exposed through `Err`/`Close`, but cannot fail, cancel, retry, or otherwise change the Agent execution.
+Trace persistence and inspection remain outside Harness execution correctness. A recorder write or fsync failure is retained by the recorder and exposed through `Err`/`Close`, but cannot fail, cancel, retry, or otherwise change the Agent execution. Reading or inspecting a trace likewise never changes checkpoints or resumes an execution.
 
 Checkpoints and traces therefore serve different purposes:
 
@@ -82,7 +125,7 @@ checkpoint
 
 trace
     -> ordered execution history
-    -> debugging / later inspection and diffing
+    -> debugging / inspection / later diffing
 ```
 
-The current trace format does not provide replay, trace merging, payload capture, indexing, remote export, OpenTelemetry integration, or automatic rotation. Those should be separate layers built on top of a stable recorded timeline.
+The current trace layer does not provide replay, trace merging, payload capture, indexing, remote export, OpenTelemetry integration, automatic rotation, or a command-line UI. Those should remain separate layers built on top of a stable recorded timeline.
