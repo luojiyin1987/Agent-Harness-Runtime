@@ -1,0 +1,8 @@
+{"schema_version":1,"sequence":1,"recorded_at":"2026-01-01T00:00:00Z","type":"execution_started","execution_id":"baseline-allowed","status":"created"}
+{"schema_version":1,"sequence":2,"recorded_at":"2026-01-01T00:00:00.001Z","type":"model_started","execution_id":"baseline-allowed","status":"running_model","model_attempt":1}
+{"schema_version":1,"sequence":3,"recorded_at":"2026-01-01T00:00:00.002Z","type":"model_completed","execution_id":"baseline-allowed","status":"running_model","model_attempt":1}
+{"schema_version":1,"sequence":4,"recorded_at":"2026-01-01T00:00:00.003Z","type":"tool_started","execution_id":"baseline-allowed","status":"running_tool","model_attempt":1,"tool_call_id":"baseline-call","tool_name":"lookup"}
+{"schema_version":1,"sequence":5,"recorded_at":"2026-01-01T00:00:00.004Z","type":"tool_completed","execution_id":"baseline-allowed","status":"running_tool","model_attempt":1,"tool_call_id":"baseline-call","tool_name":"lookup"}
+{"schema_version":1,"sequence":6,"recorded_at":"2026-01-01T00:00:00.005Z","type":"model_started","execution_id":"baseline-allowed","status":"running_model","model_attempt":2}
+{"schema_version":1,"sequence":7,"recorded_at":"2026-01-01T00:00:00.006Z","type":"model_completed","execution_id":"baseline-allowed","status":"running_model","model_attempt":2}
+{"schema_version":1,"sequence":8,"recorded_at":"2026-01-01T00:00:00.007Z","type":"execution_completed","execution_id":"baseline-allowed","status":"completed","model_attempt":2}
