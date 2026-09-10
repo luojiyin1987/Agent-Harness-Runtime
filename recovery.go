@@ -13,11 +13,12 @@ var (
 	ErrToolOutcomeUnknown  = errors.New("pending tool outcome is unknown")
 )
 
-// Resume continues a resumable checkpoint from created or running_model using
-// the saved request, history, attempt budget, and retry budget. Version 2
-// checkpoints remain resumable with automatic model retries disabled. A
-// running_tool checkpoint requires external reconciliation and is never replayed.
-// Completed executions return their saved result; failed/cancelled ones return
+// Resume continues a resumable checkpoint using the saved request, history,
+// attempt budget, and retry budget. Version 2 checkpoints remain resumable with
+// automatic model retries disabled. A running_tool checkpoint is never replayed;
+// it can continue only when the configured ToolExecutor also implements
+// ToolOutcomeReconciler and proves the original call completed. Completed
+// executions return their saved result; failed/cancelled ones return
 // ErrExecutionTerminal. The store must implement ExecutionLocker.
 func (r *Runtime) Resume(ctx context.Context, executionID string) (Result, error) {
 	if ctx == nil || executionID == "" || r.store == nil {
@@ -52,7 +53,10 @@ func (r *Runtime) Resume(ctx context.Context, executionID string) (Result, error
 		return checkpoint.Result, fmt.Errorf("%w: saved model retry budget is %d but runtime configures %d", ErrRecoveryUnsupported, checkpoint.MaxModelRetries, r.modelRetry.MaxRetries)
 	}
 	if checkpoint.PendingTool != nil {
-		return checkpoint.Result, fmt.Errorf("%w: call %q", ErrToolOutcomeUnknown, checkpoint.PendingTool.ID)
+		checkpoint, err = r.reconcilePendingTool(ctx, checkpoint)
+		if err != nil {
+			return checkpoint.Result, err
+		}
 	}
 	return r.run(ctx, checkpoint, false)
 }
