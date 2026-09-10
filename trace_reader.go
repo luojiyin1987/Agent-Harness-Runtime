@@ -91,9 +91,6 @@ func InspectTrace(records []TraceRecord) (TraceInspection, error) {
 		if record.ExecutionID != inspection.ExecutionID {
 			return TraceInspection{}, fmt.Errorf("%w: record %d: execution ID changed from %q to %q", ErrInvalidTrace, index+1, inspection.ExecutionID, record.ExecutionID)
 		}
-		if index > 0 && record.RecordedAt.Before(records[index-1].RecordedAt) {
-			return TraceInspection{}, fmt.Errorf("%w: record %d: timestamp moved backwards", ErrInvalidTrace, index+1)
-		}
 
 		inspection.LastRecordedAt = record.RecordedAt
 		inspection.LastStatus = record.Status
