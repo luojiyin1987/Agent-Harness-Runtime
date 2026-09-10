@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// CheckpointSchemaVersion 2 reserves model iterations before invoking callbacks.
-// Version 1 remains readable for inspection but cannot be resumed safely.
-const CheckpointSchemaVersion = 2
+// CheckpointSchemaVersion 3 persists the automatic model-retry budget and the
+// number of retries durably consumed. Version 2 remains resumable with retries
+// disabled; version 1 remains readable for inspection only.
+const CheckpointSchemaVersion = 3
 
 const checkpointWriteTimeout = 5 * time.Second
 
@@ -23,14 +24,16 @@ var (
 // Checkpoint is the latest execution snapshot, not a replay log. PendingTool
 // records intent; its presence does not prove that the tool ran or had no effects.
 type Checkpoint struct {
-	SchemaVersion   int       `json:"schema_version"`
-	ExecutionID     string    `json:"execution_id"`
-	Request         Request   `json:"request"`
-	MaxSteps        int       `json:"max_steps"`
-	ModelIterations int       `json:"model_iterations"`
-	Result          Result    `json:"result"`
-	PendingTool     *ToolCall `json:"pending_tool,omitempty"`
-	Error           string    `json:"error,omitempty"`
+	SchemaVersion    int       `json:"schema_version"`
+	ExecutionID      string    `json:"execution_id"`
+	Request          Request   `json:"request"`
+	MaxSteps         int       `json:"max_steps"`
+	ModelIterations  int       `json:"model_iterations"`
+	MaxModelRetries  int       `json:"max_model_retries,omitempty"`
+	ModelRetries     int       `json:"model_retries,omitempty"`
+	Result           Result    `json:"result"`
+	PendingTool      *ToolCall `json:"pending_tool,omitempty"`
+	Error            string    `json:"error,omitempty"`
 }
 
 // CheckpointStore stores independent snapshots. Create must atomically reject
