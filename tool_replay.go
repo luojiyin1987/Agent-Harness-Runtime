@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	ErrToolReplay          = errors.New("idempotent tool replay failed")
+	ErrToolReplay            = errors.New("idempotent tool replay failed")
 	errToolReplayUnsupported = errors.New("idempotent tool replay unsupported")
 )
 
