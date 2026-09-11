@@ -1,5 +1,7 @@
 # Agent Harness Runtime
 
+English | [简体中文](README-zh-CN/translation.md)
+
 This repository is a teaching and proof-of-concept project. It is not a
 production Agent platform.
 
