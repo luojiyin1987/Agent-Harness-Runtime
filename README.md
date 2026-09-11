@@ -92,6 +92,7 @@ sequenceDiagram
             Runtime->>Store: Save(running_model, completed step)
         end
     end
+```
 
 Transitions are explicit and validated. Terminal states do not transition further.
 
