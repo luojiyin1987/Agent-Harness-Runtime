@@ -19,17 +19,18 @@ var (
 // read-only reconciliation. If completion remains unknown, Resume may replay the
 // pending call only when the configured ToolExecutor explicitly implements
 // IdempotentToolExecutor. Completed executions return their saved result;
-// failed/cancelled ones return ErrExecutionTerminal. The store must implement
-// ExecutionLocker.
+// failed/cancelled ones return ErrExecutionTerminal. The store must provide
+// either lease fencing or ExecutionLocker ownership.
 func (r *Runtime) Resume(ctx context.Context, executionID string) (Result, error) {
 	if ctx == nil || executionID == "" || r.store == nil {
 		return Result{}, fmt.Errorf("%w: resume requires context, execution ID, and checkpoint store", ErrInvalidRequest)
 	}
-	release, err := r.lockExecution(ctx, executionID, true)
+	ownership, err := r.acquireExecutionOwnership(ctx, executionID, true)
 	if err != nil {
 		return Result{}, err
 	}
-	defer release()
+	defer ownership.release()
+	ctx = withExecutionFencingToken(ctx, ownership.fencingToken)
 	checkpoint, err := r.store.Load(ctx, executionID)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: load execution %q: %w", ErrCheckpointStore, executionID, err)
@@ -60,24 +61,6 @@ func (r *Runtime) Resume(ctx context.Context, executionID string) (Result, error
 		}
 	}
 	return r.run(ctx, checkpoint, false)
-}
-
-func (r *Runtime) lockExecution(ctx context.Context, executionID string, required bool) (func(), error) {
-	locker, ok := r.store.(ExecutionLocker)
-	if !ok {
-		if required {
-			return nil, fmt.Errorf("%w: store must implement ExecutionLocker", ErrRecoveryUnsupported)
-		}
-		return func() {}, nil
-	}
-	release, err := locker.LockExecution(ctx, executionID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: lock execution %q: %w", ErrCheckpointStore, executionID, err)
-	}
-	if release == nil {
-		return nil, fmt.Errorf("%w: execution lock returned no release function", ErrCheckpointStore)
-	}
-	return release, nil
 }
 
 // validateRecoveryState checks the relationships that make callbacks safe to

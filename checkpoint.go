@@ -115,8 +115,18 @@ func writeCheckpoint(ctx context.Context, store CheckpointStore, checkpoint Chec
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointWriteTimeout)
 	defer cancel()
 	checkpoint.Revision = checkpointRevision(checkpoint)
+	fencingToken := executionFencingToken(ctx)
 	var err error
-	if create {
+	if fencingToken != 0 {
+		fencedStore, ok := store.(FencedCheckpointStore)
+		if !ok {
+			err = ErrLeaseFencingUnsupported
+		} else if create {
+			err = fencedStore.CreateFenced(writeCtx, cloneCheckpoint(checkpoint), fencingToken)
+		} else {
+			err = fencedStore.SaveFenced(writeCtx, cloneCheckpoint(checkpoint), fencingToken)
+		}
+	} else if create {
 		err = store.Create(writeCtx, cloneCheckpoint(checkpoint))
 	} else {
 		err = store.Save(writeCtx, cloneCheckpoint(checkpoint))
