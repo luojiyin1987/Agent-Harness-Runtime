@@ -35,12 +35,14 @@ func WithModelTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithToolTimeout bounds each tool callback with a child context deadline.
+// WithToolTimeout bounds each tool execution or replay callback with a child
+// context deadline.
 //
 // Tool executors remain optional. When no executor is configured, the existing
 // ErrToolExecutorMissing behavior is unchanged if the model requests a tool.
 // Like model timeouts, this deadline is cooperative and cannot forcibly stop an
-// executor that ignores its context.
+// executor that ignores its context. Read-only outcome reconciliation continues
+// to use the caller-owned Resume context.
 func WithToolTimeout(timeout time.Duration) Option {
 	return func(runtime *Runtime) error {
 		if timeout <= 0 {
@@ -83,10 +85,28 @@ type timeoutToolExecutor struct {
 }
 
 func (t *timeoutToolExecutor) Execute(ctx context.Context, call ToolCall) (string, error) {
+	return t.executeWithTimeout(ctx, func(callbackCtx context.Context) (string, error) {
+		return t.inner.Execute(callbackCtx, call)
+	})
+}
+
+// Replay preserves an optional idempotent-replay capability exposed by the
+// wrapped executor and applies the same timeout as ordinary tool execution.
+func (t *timeoutToolExecutor) Replay(ctx context.Context, call ToolCall) (string, error) {
+	replayer, ok := t.inner.(IdempotentToolExecutor)
+	if !ok {
+		return "", errToolReplayUnsupported
+	}
+	return t.executeWithTimeout(ctx, func(callbackCtx context.Context) (string, error) {
+		return replayer.Replay(callbackCtx, call)
+	})
+}
+
+func (t *timeoutToolExecutor) executeWithTimeout(ctx context.Context, callback func(context.Context) (string, error)) (string, error) {
 	callbackCtx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 
-	output, err := t.inner.Execute(callbackCtx, call)
+	output, err := callback(callbackCtx)
 	if parentErr := ctx.Err(); parentErr != nil {
 		return "", parentErr
 	}
@@ -97,8 +117,8 @@ func (t *timeoutToolExecutor) Execute(ctx context.Context, call ToolCall) (strin
 }
 
 // ReconcileToolOutcome preserves an optional reconciliation capability exposed
-// by the wrapped executor. The execution timeout applies to Execute only; Resume
-// supplies its own caller-owned context to read-only reconciliation.
+// by the wrapped executor. The execution timeout applies to Execute and Replay;
+// reconciliation uses the caller-owned Resume context because it is read-only.
 func (t *timeoutToolExecutor) ReconcileToolOutcome(ctx context.Context, call ToolCall) (ToolOutcome, error) {
 	reconciler, ok := t.inner.(ToolOutcomeReconciler)
 	if !ok {
