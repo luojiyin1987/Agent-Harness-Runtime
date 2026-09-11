@@ -75,11 +75,17 @@ func (s *MemoryLeaseStore) AcquireExecutionLease(ctx context.Context, executionI
 
 // Plain writes are intentionally rejected. A MemoryLeaseStore exists to model
 // fencing, so bypassing its lease token would make the reference unsafe.
-func (s *MemoryLeaseStore) Create(context.Context, Checkpoint) error {
+func (s *MemoryLeaseStore) Create(ctx context.Context, _ Checkpoint) error {
+	if err := checkMemoryLeaseContext(ctx); err != nil {
+		return err
+	}
 	return ErrExecutionLeaseRequired
 }
 
-func (s *MemoryLeaseStore) Save(context.Context, Checkpoint) error {
+func (s *MemoryLeaseStore) Save(ctx context.Context, _ Checkpoint) error {
+	if err := checkMemoryLeaseContext(ctx); err != nil {
+		return err
+	}
 	return ErrExecutionLeaseRequired
 }
 
