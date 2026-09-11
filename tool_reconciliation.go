@@ -42,7 +42,7 @@ func (r *Runtime) reconcilePendingTool(ctx context.Context, checkpoint Checkpoin
 
 	reconciler, ok := r.tools.(ToolOutcomeReconciler)
 	if !ok {
-		return checkpoint, fmt.Errorf("%w: call %q", ErrToolOutcomeUnknown, call.ID)
+		return r.replayPendingTool(ctx, checkpoint)
 	}
 
 	outcome, err := reconciler.ReconcileToolOutcome(ctx, *call)
@@ -58,27 +58,9 @@ func (r *Runtime) reconcilePendingTool(ctx context.Context, checkpoint Checkpoin
 		if outcome.Output != "" {
 			return checkpoint, fmt.Errorf("%w: unknown call %q returned output", ErrToolReconciliation, call.ID)
 		}
-		return checkpoint, fmt.Errorf("%w: call %q", ErrToolOutcomeUnknown, call.ID)
+		return r.replayPendingTool(ctx, checkpoint)
 	case ToolOutcomeCompleted:
-		next := cloneCheckpoint(checkpoint)
-		next.Result.Steps = append(next.Result.Steps, Step{
-			Index: len(next.Result.Steps) + 1,
-			Call:  *call,
-			Result: ToolResult{
-				CallID: call.ID,
-				Output: outcome.Output,
-			},
-		})
-		next.Result.Transitions = append(next.Result.Transitions, Transition{
-			From: StatusRunningTool,
-			To:   StatusRunningModel,
-		})
-		next.Result.Status = StatusRunningModel
-		next.PendingTool = nil
-		if err := writeCheckpoint(ctx, r.store, next, false); err != nil {
-			return checkpoint, err
-		}
-		return next, nil
+		return r.completePendingTool(ctx, checkpoint, outcome.Output)
 	default:
 		return checkpoint, fmt.Errorf("%w: call %q returned unknown state %q", ErrToolReconciliation, call.ID, outcome.State)
 	}
