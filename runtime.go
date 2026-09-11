@@ -200,6 +200,11 @@ func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 	}
 	defer ownership.release()
 	ctx = withExecutionFencingToken(ctx, ownership.fencingToken)
+	ctx, stopRenewal, err := r.startExecutionLeaseRenewal(ctx, req.ExecutionID, ownership.fencingToken)
+	if err != nil {
+		return Result{}, err
+	}
+	defer stopRenewal()
 	initial := Checkpoint{
 		SchemaVersion:   CheckpointSchemaVersion,
 		ExecutionID:     req.ExecutionID,
@@ -293,7 +298,7 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 		}
 	}
 	for iterations < initial.MaxSteps {
-		if err := ctx.Err(); err != nil {
+		if err := executionContextErr(ctx); err != nil {
 			_ = exec.transition(StatusCancelled)
 			return snapshot(exec, steps, ""), err
 		}
@@ -304,7 +309,7 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 		if err := persist(snapshot(exec, steps, ""), nil, false); err != nil {
 			return lastSaved, err
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := executionContextErr(ctx); ctxErr != nil {
 			_ = exec.transition(StatusCancelled)
 			return snapshot(exec, steps, ""), ctxErr
 		}
@@ -328,7 +333,7 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 			Error:        err,
 		})
 		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			if ctxErr := executionContextErr(ctx); ctxErr != nil {
 				_ = exec.transition(StatusCancelled)
 				return snapshot(exec, steps, ""), ctxErr
 			}
@@ -341,6 +346,9 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 				}
 				if waitErr := r.waitModelRetry(ctx); waitErr != nil {
 					_ = exec.transition(StatusCancelled)
+					if ctxErr := executionContextErr(ctx); ctxErr != nil {
+						return snapshot(exec, steps, ""), ctxErr
+					}
 					return snapshot(exec, steps, ""), waitErr
 				}
 				continue
@@ -348,7 +356,7 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 			_ = exec.transition(StatusFailed)
 			return snapshot(exec, steps, ""), fmt.Errorf("model step: %w", err)
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := executionContextErr(ctx); ctxErr != nil {
 			_ = exec.transition(StatusCancelled)
 			return snapshot(exec, steps, ""), ctxErr
 		}
@@ -382,7 +390,7 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 			if err := persist(snapshot(exec, steps, ""), nil, false); err != nil {
 				return lastSaved, err
 			}
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			if ctxErr := executionContextErr(ctx); ctxErr != nil {
 				_ = exec.transition(StatusCancelled)
 				return snapshot(exec, steps, ""), ctxErr
 			}
@@ -408,14 +416,14 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 				Error:        err,
 			})
 			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
+				if ctxErr := executionContextErr(ctx); ctxErr != nil {
 					_ = exec.transition(StatusCancelled)
 					return snapshot(exec, steps, ""), ctxErr
 				}
 				_ = exec.transition(StatusFailed)
 				return snapshot(exec, steps, ""), fmt.Errorf("execute tool %q: %w", decision.ToolCall.Name, err)
 			}
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			if ctxErr := executionContextErr(ctx); ctxErr != nil {
 				_ = exec.transition(StatusCancelled)
 				return snapshot(exec, steps, ""), ctxErr
 			}
@@ -438,7 +446,7 @@ func (r *Runtime) run(ctx context.Context, initial Checkpoint, create bool) (res
 		}
 	}
 
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if ctxErr := executionContextErr(ctx); ctxErr != nil {
 		_ = exec.transition(StatusCancelled)
 		return snapshot(exec, steps, ""), ctxErr
 	}
