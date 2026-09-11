@@ -10,10 +10,10 @@ import (
 
 type replayingTool struct {
 	recordingTool
-	output   string
+	output    string
 	replayErr error
-	replayed []ToolCall
-	onReplay func(context.Context, ToolCall) (string, error)
+	replayed  []ToolCall
+	onReplay  func(context.Context, ToolCall) (string, error)
 }
 
 func (t *replayingTool) Replay(ctx context.Context, call ToolCall) (string, error) {
@@ -26,8 +26,8 @@ func (t *replayingTool) Replay(ctx context.Context, call ToolCall) (string, erro
 
 type reconcilingReplayingTool struct {
 	*replayingTool
-	outcome     ToolOutcome
-	reconciled  []ToolCall
+	outcome    ToolOutcome
+	reconciled []ToolCall
 }
 
 func (t *reconcilingReplayingTool) ReconcileToolOutcome(_ context.Context, call ToolCall) (ToolOutcome, error) {
