@@ -161,6 +161,28 @@ runtime, err := harness.New(
 
 Retries are limited to model callbacks. Tool callbacks are never retried automatically because a failed or timed-out tool may already have produced an external side effect.
 
+### Why tool calls are not retried
+
+Consider a `charge_payment` tool call with ID `payment-42`:
+
+1. The Harness saves `payment-42` as the pending tool call.
+2. The payment service charges the customer $10.
+3. The service sends a successful response.
+4. The network connection fails before the Harness receives that response.
+5. The Harness sees a timeout, but the customer has already paid.
+
+An automatic retry could charge the customer another $10. The timeout only
+proves that the Harness did not receive a result. It does not prove that the
+tool produced no effect.
+
+The Harness therefore keeps `payment-42` pending and does not execute it again.
+On recovery, a `ToolOutcomeReconciler` can query the payment service by call ID.
+The execution continues only if that query proves the first charge completed.
+An unknown outcome returns `ErrToolOutcomeUnknown` and stops recovery.
+
+This rule also applies to email, file creation, deployment, and message sending.
+Each operation can complete before its response becomes unavailable.
+
 The built-in classifier retries `ErrModelTimeout`, generic provider transport failures, and provider HTTP 408/429/500/502/503/504. `ErrModelResponse`, caller cancellation, and other model errors fail immediately.
 
 Every retry consumes the ordinary `MaxSteps` model-attempt budget. The retry budget is also persisted independently so a crash/restart cannot reset already acknowledged automatic retries. See [MODEL_RETRIES.md](MODEL_RETRIES.md) for the durable accounting and recovery boundary.
