@@ -15,16 +15,20 @@ const CheckpointSchemaVersion = 3
 const checkpointWriteTimeout = 5 * time.Second
 
 var (
-	ErrCheckpointStore   = errors.New("checkpoint store failed")
-	ErrExecutionExists   = errors.New("execution already exists")
-	ErrExecutionNotFound = errors.New("execution not found")
-	ErrInvalidCheckpoint = errors.New("invalid checkpoint")
+	ErrCheckpointStore    = errors.New("checkpoint store failed")
+	ErrCheckpointConflict = errors.New("checkpoint revision conflict")
+	ErrExecutionExists    = errors.New("execution already exists")
+	ErrExecutionNotFound  = errors.New("execution not found")
+	ErrInvalidCheckpoint  = errors.New("invalid checkpoint")
 )
 
 // Checkpoint is the latest execution snapshot, not a replay log. PendingTool
 // records intent; its presence does not prove that the tool ran or had no effects.
+// Revision is a monotonic logical revision assigned by the runtime. Zero is
+// accepted for checkpoints written before revision tracking was introduced.
 type Checkpoint struct {
 	SchemaVersion   int       `json:"schema_version"`
+	Revision        uint64    `json:"revision,omitempty"`
 	ExecutionID     string    `json:"execution_id"`
 	Request         Request   `json:"request"`
 	MaxSteps        int       `json:"max_steps"`
@@ -85,11 +89,32 @@ func cloneCheckpoint(checkpoint Checkpoint) Checkpoint {
 	return checkpoint
 }
 
+// checkpointRevision derives a stable logical revision from durable progress.
+// Every persisted callback boundary changes exactly one of these counters:
+// model attempt reservations, retry reservations, tool start/completion
+// transitions, or terminal status. The created checkpoint therefore starts at 1
+// and later runtime writes increase monotonically without process-local state.
+func checkpointRevision(checkpoint Checkpoint) uint64 {
+	revision := uint64(1) + uint64(checkpoint.ModelIterations) + uint64(checkpoint.ModelRetries)
+	for _, transition := range checkpoint.Result.Transitions {
+		if transition.To == StatusRunningTool ||
+			(transition.From == StatusRunningTool && transition.To == StatusRunningModel) {
+			revision++
+		}
+	}
+	switch checkpoint.Result.Status {
+	case StatusCompleted, StatusFailed, StatusCancelled:
+		revision++
+	}
+	return revision
+}
+
 // Checkpoint writes have a separate, bounded lifetime so cancellation itself can
 // be recorded. The execution context is still checked before invoking callbacks.
 func writeCheckpoint(ctx context.Context, store CheckpointStore, checkpoint Checkpoint, create bool) error {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointWriteTimeout)
 	defer cancel()
+	checkpoint.Revision = checkpointRevision(checkpoint)
 	var err error
 	if create {
 		err = store.Create(writeCtx, cloneCheckpoint(checkpoint))
