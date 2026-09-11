@@ -91,10 +91,18 @@ func (s *FileStore) write(ctx context.Context, checkpoint Checkpoint, create boo
 	}
 	target := s.path(checkpoint.ExecutionID)
 	if !create {
-		if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%w: %q", ErrExecutionNotFound, checkpoint.ExecutionID)
-		} else if err != nil {
+		current, err := s.Load(ctx, checkpoint.ExecutionID)
+		if err != nil {
 			return err
+		}
+		// Revision zero is the legacy, unversioned form. Once a record has a
+		// revision, a writer cannot drop revision tracking or replace it with an
+		// equal/older logical snapshot. Runtime Run/Resume already hold the
+		// execution lock; this check protects handoff and direct FileStore users.
+		if current.Revision > 0 {
+			if checkpoint.Revision == 0 || checkpoint.Revision <= current.Revision {
+				return fmt.Errorf("%w: execution %q has revision %d, attempted %d", ErrCheckpointConflict, checkpoint.ExecutionID, current.Revision, checkpoint.Revision)
+			}
 		}
 	}
 	data, err := json.Marshal(checkpoint)
@@ -184,6 +192,9 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 		if err := validateRecoveryState(checkpoint); err != nil {
 			return err
 		}
+	}
+	if checkpoint.Revision != 0 && checkpoint.Revision != checkpointRevision(checkpoint) {
+		return fmt.Errorf("%w: checkpoint revision %d does not match durable progress %d", ErrInvalidCheckpoint, checkpoint.Revision, checkpointRevision(checkpoint))
 	}
 	// encoding/json replaces invalid UTF-8 silently. Reject it so a successful
 	// write cannot change prompts, tool arguments, outputs, or execution IDs.
