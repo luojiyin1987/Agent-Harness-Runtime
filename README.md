@@ -1,8 +1,14 @@
 # Agent Harness Runtime
 
-A small, explicit runtime for driving an Agent execution through model decisions, tool calls, durable recovery boundaries, and terminal outcomes.
+This repository is a teaching and proof-of-concept project. It is not a
+production Agent platform.
 
-The project focuses on the execution lifecycle between an Agent-facing API and lower-level tool infrastructure. It deliberately keeps model providers, sandbox backends, MCP transports, schedulers, and application-specific orchestration outside the core state machine.
+The small runtime demonstrates model decisions, tool calls, durable recovery
+boundaries, and terminal outcomes. It focuses on the lifecycle between an Agent
+API and lower-level tool infrastructure.
+
+The project keeps model providers, sandbox backends, MCP transports, schedulers,
+and application orchestration outside the core state machine.
 
 ## Status
 
