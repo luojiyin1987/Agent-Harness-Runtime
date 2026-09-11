@@ -31,8 +31,16 @@ func (r *Runtime) Resume(ctx context.Context, executionID string) (Result, error
 	}
 	defer ownership.release()
 	ctx = withExecutionFencingToken(ctx, ownership.fencingToken)
+	ctx, stopRenewal, err := r.startExecutionLeaseRenewal(ctx, executionID, ownership.fencingToken)
+	if err != nil {
+		return Result{}, err
+	}
+	defer stopRenewal()
 	checkpoint, err := r.store.Load(ctx, executionID)
 	if err != nil {
+		if ctxErr := executionContextErr(ctx); ctxErr != nil {
+			return Result{}, ctxErr
+		}
 		return Result{}, fmt.Errorf("%w: load execution %q: %w", ErrCheckpointStore, executionID, err)
 	}
 	if err := validateCheckpoint(checkpoint); err != nil {
