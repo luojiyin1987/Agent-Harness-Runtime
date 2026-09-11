@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	ErrExecutionLeaseLost   = errors.New("execution lease lost")
-	ErrInvalidLeaseRenewal  = errors.New("invalid execution lease renewal interval")
+	ErrExecutionLeaseLost  = errors.New("execution lease lost")
+	ErrInvalidLeaseRenewal = errors.New("invalid execution lease renewal interval")
 )
 
 // ExecutionLeaseRenewer is an optional capability for lease-aware checkpoint
