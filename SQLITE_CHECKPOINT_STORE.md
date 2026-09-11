@@ -127,6 +127,18 @@ stored checkpoint remains process B's progress
 
 This covers process death, TTL takeover, monotonic fencing tokens, stale renewal rejection, stale checkpoint rejection, and persistence across independent SQLite connections.
 
+## Runnable crash recovery demo
+
+A deterministic example shows the Runtime recovery path on top of the same store:
+
+```sh
+go run ./examples/sqlite-recovery
+```
+
+The first process exits from inside a model callback after `running_model` has been durably saved. A second process opens the same SQLite file, observes `ErrExecutionBusy` while the old lease is live, waits for lease expiry, then resumes the saved execution to `completed` under a newer fencing token.
+
+See [`examples/sqlite-recovery`](examples/sqlite-recovery/README.md) for the exact sequence and recovery boundary.
+
 ## Non-goals
 
 This store does not add a worker queue, scheduler, leader election, database migrations framework, checkpoint history log, external side-effect transactions, or exactly-once execution.
