@@ -192,13 +192,14 @@ func (r *Runtime) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	// Even an already cancelled Run can create and persist its cancelled state.
-	lockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointWriteTimeout)
-	release, err := r.lockExecution(lockCtx, req.ExecutionID, false)
+	ownershipCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointWriteTimeout)
+	ownership, err := r.acquireExecutionOwnership(ownershipCtx, req.ExecutionID, false)
 	cancel()
 	if err != nil {
 		return Result{}, err
 	}
-	defer release()
+	defer ownership.release()
+	ctx = withExecutionFencingToken(ctx, ownership.fencingToken)
 	initial := Checkpoint{
 		SchemaVersion:   CheckpointSchemaVersion,
 		ExecutionID:     req.ExecutionID,
