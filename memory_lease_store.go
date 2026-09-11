@@ -73,6 +73,36 @@ func (s *MemoryLeaseStore) AcquireExecutionLease(ctx context.Context, executionI
 	return token, release, nil
 }
 
+// ExecutionLeaseRenewalInterval keeps renewals comfortably ahead of expiry
+// while leaving enough room for an individual renewal attempt to complete.
+func (s *MemoryLeaseStore) ExecutionLeaseRenewalInterval() time.Duration {
+	interval := s.leaseDuration / 3
+	if interval <= 0 {
+		return s.leaseDuration
+	}
+	return interval
+}
+
+func (s *MemoryLeaseStore) RenewExecutionLease(ctx context.Context, executionID string, fencingToken uint64) error {
+	if err := checkMemoryLeaseContext(ctx); err != nil {
+		return err
+	}
+	if executionID == "" || fencingToken == 0 {
+		return fmt.Errorf("%w: execution ID and fencing token are required", ErrExecutionLeaseRequired)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	lease, ok := s.leases[executionID]
+	if !ok || lease.token != fencingToken || !now.Before(lease.expiresAt) {
+		return fmt.Errorf("%w: execution %q token %d", ErrExecutionFenced, executionID, fencingToken)
+	}
+	lease.expiresAt = now.Add(s.leaseDuration)
+	s.leases[executionID] = lease
+	return nil
+}
+
 // Plain writes are intentionally rejected. A MemoryLeaseStore exists to model
 // fencing, so bypassing its lease token would make the reference unsafe.
 func (s *MemoryLeaseStore) Create(ctx context.Context, _ Checkpoint) error {

@@ -35,7 +35,7 @@ func (r *Runtime) replayPendingTool(ctx context.Context, checkpoint Checkpoint) 
 	}
 
 	output, err := replayer.Replay(ctx, *call)
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if ctxErr := executionContextErr(ctx); ctxErr != nil {
 		return checkpoint, ctxErr
 	}
 	if errors.Is(err, errToolReplayUnsupported) {

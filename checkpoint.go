@@ -109,9 +109,13 @@ func checkpointRevision(checkpoint Checkpoint) uint64 {
 	return revision
 }
 
-// Checkpoint writes have a separate, bounded lifetime so cancellation itself can
-// be recorded. The execution context is still checked before invoking callbacks.
+// Checkpoint writes have a separate, bounded lifetime so normal cancellation can
+// still be recorded. Lease loss is different: ownership is no longer trusted,
+// so no later snapshot may be published with the old fencing token.
 func writeCheckpoint(ctx context.Context, store CheckpointStore, checkpoint Checkpoint, create bool) error {
+	if cause := context.Cause(ctx); errors.Is(cause, ErrExecutionLeaseLost) {
+		return fmt.Errorf("%w: execution %q: %w", ErrCheckpointStore, checkpoint.ExecutionID, cause)
+	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointWriteTimeout)
 	defer cancel()
 	checkpoint.Revision = checkpointRevision(checkpoint)
