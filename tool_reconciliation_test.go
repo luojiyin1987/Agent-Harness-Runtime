@@ -12,7 +12,7 @@ type reconcilingTool struct {
 	outcome      ToolOutcome
 	reconcileErr error
 	reconciled   []ToolCall
-	onReconcile func(context.Context, ToolCall) (ToolOutcome, error)
+	onReconcile  func(context.Context, ToolCall) (ToolOutcome, error)
 }
 
 func (t *reconcilingTool) ReconcileToolOutcome(ctx context.Context, call ToolCall) (ToolOutcome, error) {

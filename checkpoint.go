@@ -24,16 +24,16 @@ var (
 // Checkpoint is the latest execution snapshot, not a replay log. PendingTool
 // records intent; its presence does not prove that the tool ran or had no effects.
 type Checkpoint struct {
-	SchemaVersion    int       `json:"schema_version"`
-	ExecutionID      string    `json:"execution_id"`
-	Request          Request   `json:"request"`
-	MaxSteps         int       `json:"max_steps"`
-	ModelIterations  int       `json:"model_iterations"`
-	MaxModelRetries  int       `json:"max_model_retries,omitempty"`
-	ModelRetries     int       `json:"model_retries,omitempty"`
-	Result           Result    `json:"result"`
-	PendingTool      *ToolCall `json:"pending_tool,omitempty"`
-	Error            string    `json:"error,omitempty"`
+	SchemaVersion   int       `json:"schema_version"`
+	ExecutionID     string    `json:"execution_id"`
+	Request         Request   `json:"request"`
+	MaxSteps        int       `json:"max_steps"`
+	ModelIterations int       `json:"model_iterations"`
+	MaxModelRetries int       `json:"max_model_retries,omitempty"`
+	ModelRetries    int       `json:"model_retries,omitempty"`
+	Result          Result    `json:"result"`
+	PendingTool     *ToolCall `json:"pending_tool,omitempty"`
+	Error           string    `json:"error,omitempty"`
 }
 
 // CheckpointStore stores independent snapshots. Create must atomically reject
