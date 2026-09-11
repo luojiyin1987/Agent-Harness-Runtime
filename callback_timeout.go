@@ -96,6 +96,17 @@ func (t *timeoutToolExecutor) Execute(ctx context.Context, call ToolCall) (strin
 	return output, err
 }
 
+// ReconcileToolOutcome preserves an optional reconciliation capability exposed
+// by the wrapped executor. The execution timeout applies to Execute only; Resume
+// supplies its own caller-owned context to read-only reconciliation.
+func (t *timeoutToolExecutor) ReconcileToolOutcome(ctx context.Context, call ToolCall) (ToolOutcome, error) {
+	reconciler, ok := t.inner.(ToolOutcomeReconciler)
+	if !ok {
+		return ToolOutcome{State: ToolOutcomeUnknown}, nil
+	}
+	return reconciler.ReconcileToolOutcome(ctx, call)
+}
+
 func callbackTimeoutError(kind error, timeout time.Duration) error {
 	return fmt.Errorf("%w: %w after %s", kind, context.DeadlineExceeded, timeout)
 }
