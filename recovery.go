@@ -15,11 +15,12 @@ var (
 
 // Resume continues a resumable checkpoint using the saved request, history,
 // attempt budget, and retry budget. Version 2 checkpoints remain resumable with
-// automatic model retries disabled. A running_tool checkpoint is never replayed;
-// it can continue only when the configured ToolExecutor also implements
-// ToolOutcomeReconciler and proves the original call completed. Completed
-// executions return their saved result; failed/cancelled ones return
-// ErrExecutionTerminal. The store must implement ExecutionLocker.
+// automatic model retries disabled. A running_tool checkpoint first attempts
+// read-only reconciliation. If completion remains unknown, Resume may replay the
+// pending call only when the configured ToolExecutor explicitly implements
+// IdempotentToolExecutor. Completed executions return their saved result;
+// failed/cancelled ones return ErrExecutionTerminal. The store must implement
+// ExecutionLocker.
 func (r *Runtime) Resume(ctx context.Context, executionID string) (Result, error) {
 	if ctx == nil || executionID == "" || r.store == nil {
 		return Result{}, fmt.Errorf("%w: resume requires context, execution ID, and checkpoint store", ErrInvalidRequest)
