@@ -78,7 +78,10 @@ func (r *Runtime) startExecutionLeaseRenewal(ctx context.Context, executionID st
 	}()
 
 	stop := func() {
-		stopOnce.Do(func() { close(stopCh) })
+		stopOnce.Do(func() {
+			cancelCause(context.Canceled)
+			close(stopCh)
+		})
 		<-doneCh
 	}
 	return runCtx, stop, nil
