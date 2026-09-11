@@ -109,6 +109,24 @@ host A ---- network filesystem ---- host B
 
 SQLite locking and durability depend on filesystem semantics. Cross-host leases, failover, replication, and consensus require a backend designed for those properties.
 
+## Multi-process evidence
+
+The test suite also exercises ownership through separate OS processes rather than only through multiple `database/sql` handles in one process.
+
+The contention/crash path proves:
+
+```text
+process A acquires token 1 and publishes a checkpoint
+process B attempts acquisition -> ErrExecutionBusy
+process A is killed without release
+lease TTL expires
+process B acquires token 2 and publishes newer progress
+process C uses stale token 1 for renew/save -> ErrExecutionFenced
+stored checkpoint remains process B's progress
+```
+
+This covers process death, TTL takeover, monotonic fencing tokens, stale renewal rejection, stale checkpoint rejection, and persistence across independent SQLite connections.
+
 ## Non-goals
 
 This store does not add a worker queue, scheduler, leader election, database migrations framework, checkpoint history log, external side-effect transactions, or exactly-once execution.
