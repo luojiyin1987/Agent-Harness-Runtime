@@ -58,6 +58,35 @@ running_model / running_tool
    +--> failed   +--> cancelled
 ```
 
+### Execution sequence
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Runtime
+    participant Store
+    participant Model
+    participant Tool
+
+    Caller->>Runtime: Run(request)
+    Runtime->>Store: Create(created)
+
+    loop Until final decision or step limit
+        Runtime->>Store: Save model attempt
+        Runtime->>Model: Next(prompt, completed steps)
+        Model-->>Runtime: Decision
+
+        alt Final answer
+            Runtime->>Store: Save(completed)
+            Runtime-->>Caller: Result
+        else Tool call
+            Runtime->>Store: Save(running_tool, pending call)
+            Runtime->>Tool: Execute(call)
+            Tool-->>Runtime: Output
+            Runtime->>Store: Save(running_model, completed step)
+        end
+    end
+
 Transitions are explicit and validated. Terminal states do not transition further.
 
 A model step returns one of two decisions:
