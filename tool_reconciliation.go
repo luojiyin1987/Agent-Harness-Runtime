@@ -46,7 +46,7 @@ func (r *Runtime) reconcilePendingTool(ctx context.Context, checkpoint Checkpoin
 	}
 
 	outcome, err := reconciler.ReconcileToolOutcome(ctx, *call)
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if ctxErr := executionContextErr(ctx); ctxErr != nil {
 		return checkpoint, ctxErr
 	}
 	if err != nil {
